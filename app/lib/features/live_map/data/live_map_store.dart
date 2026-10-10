@@ -139,9 +139,10 @@ class LiveMapStore extends ChangeNotifier {
       sessions = [];
       _failures = (_failures + 1).clamp(1, 4);
       final wasSharing = sharing;
+      final stopUnconfirmed = error?.contains('30 seconds') ?? false;
       _cancelAcquisition();
       error =
-          'Unable to confirm session access. Locations are hidden. ${wasSharing ? 'Sharing stopped locally; remote visibility expires within 30 seconds of the last accepted fix.' : 'Reconnect or return to sessions.'}';
+          'Unable to confirm session access. Locations are hidden. ${wasSharing || stopUnconfirmed ? 'Sharing stopped locally; remote visibility expires within 30 seconds of the last accepted fix.' : 'Reconnect or return to sessions.'}';
       if (wasSharing && id != null) unawaited(_remoteStop(id, 'pause'));
     } finally {
       _polling = false;

@@ -29,7 +29,11 @@ void main() {
       expect(find.text('Find your group'), findsOneWidget);
       await tester.tap(find.text('Create Live Map'));
       await tester.pumpAndSettle();
-      expect(find.text('Unlinked · trip contacts'), findsOneWidget);
+      expect(find.text('Goa weekend'), findsOneWidget);
+      await tester.tap(find.text('Goa weekend'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Unlinked · trip contacts').last);
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Create'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Start session'));
