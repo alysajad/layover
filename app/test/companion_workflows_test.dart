@@ -161,6 +161,46 @@ void main() {
     );
   }
 
+  testWidgets('transfer correction handles a removed recipient', (
+    tester,
+  ) async {
+    final store = TripStore(persistence: false);
+    addTearDown(store.dispose);
+    await store.initialize();
+    (store.snapshot.data['members'] as List).removeWhere(
+      (m) => m['user_id'] == 'demo-rahul',
+    );
+    Json? result;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async {
+              result = await showTransferForm(
+                context,
+                store,
+                correction: Transfer({
+                  'id': 'old-transfer',
+                  'sender_id': store.userId,
+                  'recipient_id': 'demo-rahul',
+                  'amount_minor': 10000,
+                  'status': 'reported',
+                }),
+              );
+            },
+            child: const Text('Open'),
+          ),
+        ),
+      ),
+    );
+    await tap(tester, find.text('Open'));
+    expect(tester.takeException(), isNull);
+    expect(find.text('Recipient no longer available'), findsWidgets);
+    await tap(tester, find.text('Report payment'));
+    expect(result, isNull);
+    expect(find.text('Recipient is no longer a member.'), findsOneWidget);
+  });
+
   testWidgets('pot revision preserves unequal shares and opening version', (
     tester,
   ) async {

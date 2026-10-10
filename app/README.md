@@ -15,6 +15,13 @@ share the same theme. Use the three-dot **Trip actions** menu beside the trip
 selector to create, edit, or join a trip. Phone navigation stays at the bottom;
 wide screens use a navigation rail.
 
+Connected trip data refreshes after every confirmed change, on tab selection,
+on app resume, and every five seconds while foregrounded. Requests do not overlap;
+failures back off to at most one attempt per minute. Financial writes require a
+connection, and an uncertain write must be retried with its original request ID.
+See [navigation verification](../docs/navigation-verification.md) for coverage and
+remaining hosted checks.
+
 ## Run the Demo
 
 ```sh
@@ -43,6 +50,8 @@ to localhost and serves the current release build; rebuild after code changes.
 1. Create a development Supabase project. Apply
    `supabase/migrations/0001_init.sql`, then `0002_companion.sql`, then `0003_live_map.sql` in that order.
    These migrations create a private `trip-files` storage bucket as well.
+   Apply `0004_trip_explorer.sql` and follow [Explorer deployment](../docs/trip-explorer-operations.md)
+   to enable connected budget exploration.
 2. Enable Google authentication using [the Google sign-in setup](../docs/google-sign-in-setup.md).
    The app uses browser OAuth with PKCE; email delivery and SMTP are not required.
 3. Populate the existing `env.json` format with `SUPABASE_URL` and
@@ -104,6 +113,7 @@ test auth/storage schemas. They never connect to a hosted database:
 npm install --prefix /tmp/layover-check @electric-sql/pglite playwright typescript@5.9.3
 NODE_PATH=/tmp/layover-check/node_modules node ../supabase/tests/companion.cjs
 NODE_PATH=/tmp/layover-check/node_modules node ../supabase/tests/reminders.cjs
+NODE_PATH=/tmp/layover-check/node_modules node tool/companion_two_clients.cjs
 ```
 
 With the preview server running, browser checks capture phone and desktop
@@ -115,7 +125,7 @@ NODE_PATH=/tmp/layover-check/node_modules node tool/browser_check.cjs
 
 ## Pilot Gates
 
-Hosted OTP, Storage policies, scheduled delivery, Firebase configuration,
+Hosted Google sign-in, Storage policies, scheduled delivery, Firebase configuration,
 signed Android distribution, retention/deletion handling, and physical-device
 behavior need verification in the actual deployment. The account-deletion
 control records a request for review; it does not immediately erase shared

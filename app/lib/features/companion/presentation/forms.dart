@@ -217,12 +217,10 @@ class _EntryFormState extends State<EntryForm> {
         if ((await f.length() ?? 10485761) > 10485760) {
           throw const FormatException('Maximum file size is 10 MB.');
         }
+        final bytes = await f.readAsBytes();
+        if (!mounted) return;
         requireFormTrip(widget.store, accountId, tripId);
-        attachment = await widget.store.upload(
-          tripId,
-          f.name,
-          await f.readAsBytes(),
-        );
+        attachment = await widget.store.upload(tripId, f.name, bytes);
       }
     } catch (e) {
       error = friendlyError(e);
@@ -599,12 +597,10 @@ class _MoneyFormState extends State<MoneyForm> {
         if ((await f.length() ?? 10485761) > 10485760) {
           throw const FormatException('Maximum file size is 10 MB.');
         }
+        final bytes = await f.readAsBytes();
+        if (!mounted) return;
         requireFormTrip(widget.store, accountId, tripId);
-        receipt = await widget.store.upload(
-          tripId,
-          f.name,
-          await f.readAsBytes(),
-        );
+        receipt = await widget.store.upload(tripId, f.name, bytes);
       }
     } catch (e) {
       error = friendlyError(e);
@@ -890,7 +886,7 @@ class _TransferFormState extends State<TransferForm> {
       widget.initial?['recipient_id'] as String? ??
       (widget.pot != null
           ? trip.organizer
-          : members.where((m) => m.id != widget.store.userId).firstOrNull?.id);
+          : members.where((m) => m.id != accountId).firstOrNull?.id);
   String? error;
   @override
   void dispose() {
@@ -917,10 +913,15 @@ class _TransferFormState extends State<TransferForm> {
               isExpanded: true,
               decoration: const InputDecoration(labelText: 'Recipient'),
               items: [
-                for (final m in members.where(
-                  (m) => m.id != widget.store.userId,
-                ))
+                for (final m in members.where((m) => m.id != accountId))
                   DropdownMenuItem(value: m.id, child: Text(m.name)),
+                if (recipient != null &&
+                    !members.any((m) => m.id == recipient && m.id != accountId))
+                  DropdownMenuItem(
+                    value: recipient,
+                    enabled: false,
+                    child: const Text('Recipient no longer available'),
+                  ),
               ],
               onChanged: widget.pot != null || widget.correction != null
                   ? null

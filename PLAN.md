@@ -11,6 +11,9 @@
 - Offline summaries/drafts, idempotent request recovery, activity and in-app
   notifications, push-registration client and reminder-worker source.
 - Versioned database migration, accounting/access tests, browser preview tools.
+- Five-second foreground sync with serialized reads/writes, account isolation,
+  retry recovery, and form version protection. The latest tab audit and actual
+  deployment limits are in [navigation verification](docs/navigation-verification.md).
 
 ## Deployment and Pilot Gates
 

@@ -75,7 +75,11 @@ blocked until that person's balance and pending transfers are resolved.
 
 ## Offline and Recovery
 
-The store refreshes on resume, manual refresh, and a five-second foreground connected poll.
+The store refreshes on resume, tab selection, manual refresh, and every five
+seconds while connected and foregrounded. It coalesces concurrent reads, waits
+for an in-flight read before a command, and fetches again after a confirmed write.
+Account generations discard late responses after sign-out or an account change.
+Failures back off to one attempt per minute; backgrounding cancels polling.
 User-scoped local preferences retain non-financial itinerary/booking summaries
 and expense drafts. No background financial writes occur offline. A successful
 refresh removes inaccessible trips and their drafts.

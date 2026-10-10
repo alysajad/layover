@@ -76,16 +76,19 @@ actual Google login requires the provider configuration above.
 
 ### Verification in this workspace
 
-- All 45 Flutter tests passed; `flutter analyze` reported no issues.
+- The current verification run passed all 56 Flutter tests; `flutter analyze`
+  reported no issues. See [navigation verification](navigation-verification.md).
 - Android debug and web release builds passed with the local public settings.
 - The Android update was installed on the connected phone. Android's intent
   resolver maps `com.layover.layover://login-callback/` to Layover's MainActivity.
 - Chromium checks passed at 390px and 1440px for the sign-in UI, intercepted
   Google OAuth handoff with PKCE, and a simulated cancelled callback with retry.
   These checks did not authenticate a real Google account.
-- The hosted `/auth/v1/settings` check still reports Google disabled. Real login
-  remains pending until the Google Cloud client and Supabase provider/redirect
-  configuration are saved.
+- The hosted `/auth/v1/settings` check on 11 October 2026 reports Google enabled.
+  The supplied dashboard screenshots show the Android and localhost redirects
+  saved. The installed update restored a connected session and refreshed the
+  phone home successfully. A fresh Google account-chooser/callback exchange and
+  the Site URL still need verification.
 
 References: [Supabase Google sign-in](https://supabase.com/docs/guides/auth/social-login/auth-google),
 [Flutter OAuth](https://supabase.com/docs/reference/dart/auth-signinwithoauth),
