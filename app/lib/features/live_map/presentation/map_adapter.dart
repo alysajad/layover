@@ -336,7 +336,7 @@ class _GroupMapState extends State<GroupMap> {
   Widget build(BuildContext context) {
     if (!Env.mapboxToken.startsWith('pk.') || _failed) {
       return Card(
-        child: Center(
+        child: SingleChildScrollView(
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
