@@ -10,8 +10,9 @@ class DeviceLocation {
       );
     }
     var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied)
+    if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
+    }
     if (permission == LocationPermission.deniedForever) {
       throw const FormatException(
         'Location permission is blocked. Enable it in app or browser settings; you can still view the group.',

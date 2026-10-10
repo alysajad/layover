@@ -88,12 +88,13 @@ Future<Json?> createLiveSessionForm(
           ),
           FilledButton(
             onPressed: () {
-              if (name.text.trim().isNotEmpty)
+              if (name.text.trim().isNotEmpty) {
                 Navigator.pop(c, {
                   'name': name.text.trim(),
                   'linked_trip_id': linked,
                   'duration_hours': hours,
                 });
+              }
             },
             child: const Text('Create'),
           ),

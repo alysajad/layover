@@ -38,8 +38,9 @@ class LiveMapStore extends ChangeNotifier {
   DateTime? _lastPublish;
   DateTime? _leaseUntil;
   final Stopwatch _snapshotAge = Stopwatch();
+  Duration _snapshotLag = Duration.zero;
   DateTime get serverNow => (snapshot?.serverTime ?? DateTime.now().toUtc())
-      .add(_snapshotAge.elapsed);
+      .add(_snapshotAge.elapsed + _snapshotLag);
   bool get validAccount =>
       _identity == '${trip.demo}:${trip.userId}' && trip.signedIn;
   bool get organizer => snapshot?.session['created_by'] == trip.userId;
@@ -80,9 +81,16 @@ class LiveMapStore extends ChangeNotifier {
 
   Future<void> enter([String? id]) async {
     if (!validAccount || _disposed) return;
+    final previous = sessionId;
+    final wasSharing = sharing;
+    _cancelAcquisition();
+    if (wasSharing && previous != null) {
+      unawaited(_remoteStop(previous, 'pause'));
+    }
     ++_epoch;
     viewing = true;
     sessionId = id;
+    error = null;
     snapshot = null;
     _failures = 0;
     _freshness?.cancel();
@@ -109,6 +117,7 @@ class LiveMapStore extends ChangeNotifier {
   Future<void> refresh() async {
     if (_polling || !viewing || !validAccount || _disposed) return;
     final epoch = _epoch, id = sessionId;
+    final requestAge = Stopwatch()..start();
     _polling = true;
     _timer?.cancel();
     try {
@@ -119,6 +128,8 @@ class LiveMapStore extends ChangeNotifier {
         contacts = rows(data['contacts']);
       } else {
         snapshot = LiveSnapshot(data);
+        // Conservatively count the entire round trip toward server freshness.
+        _snapshotLag = requestAge.elapsed;
         _snapshotAge
           ..reset()
           ..start();
@@ -132,6 +143,7 @@ class LiveMapStore extends ChangeNotifier {
           error = 'Sharing paused. Choose Share location to resume.';
         }
       }
+      if (_failures > 0) error = null;
       _failures = 0;
     } catch (_) {
       if (!_valid(epoch)) return;
@@ -178,7 +190,7 @@ class LiveMapStore extends ChangeNotifier {
 
   Future<void> share() async {
     if (busy || !active || sessionId == null || !viewing) return;
-    final id = sessionId!, epoch = _epoch, shareEpoch = ++_shareEpoch;
+    final id = sessionId!, epoch = ++_epoch, shareEpoch = ++_shareEpoch;
     busy = true;
     error = null;
     _notify();
@@ -224,12 +236,17 @@ class LiveMapStore extends ChangeNotifier {
   }
 
   Future<void> _publish(Json fix, int epoch, int shareEpoch) async {
-    if (!_valid(epoch) || shareEpoch != _shareEpoch || !sharing || _publishing)
+    if (!_valid(epoch) ||
+        shareEpoch != _shareEpoch ||
+        !sharing ||
+        _publishing) {
       return;
+    }
     final now = DateTime.now();
     if (_lastPublish != null &&
-        now.difference(_lastPublish!) < const Duration(seconds: 5))
+        now.difference(_lastPublish!) < const Duration(seconds: 5)) {
       return;
+    }
     final timestamp = DateTime.tryParse(
       fix['client_timestamp'] as String? ?? '',
     );
@@ -251,6 +268,8 @@ class LiveMapStore extends ChangeNotifier {
     try {
       await api.publish(id, _generation, ++_sequence, fix);
       if (_valid(epoch) && shareEpoch == _shareEpoch && sharing) {
+        // Throttle from acknowledgment so network jitter cannot violate the server rate.
+        _lastPublish = DateTime.now();
         _leaseUntil = now.add(const Duration(seconds: 28));
         error = accuracy > 100
             ? 'Approximate GPS: accuracy is worse than 100 metres.'
@@ -275,13 +294,14 @@ class LiveMapStore extends ChangeNotifier {
     _leaseUntil = null;
     unawaited(_fixes?.cancel());
     _fixes = null;
-    if (snapshot != null)
+    if (snapshot != null) {
       snapshot = LiveSnapshot({
         ...snapshot!.data,
         'locations': snapshot!.locations
             .where((l) => l['user_id'] != trip.userId)
             .toList(),
       });
+    }
   }
 
   Future<void> _remoteStop(String id, String action) async {
@@ -296,11 +316,13 @@ class LiveMapStore extends ChangeNotifier {
   }
 
   Future<void> stop({bool pause = false}) async {
+    ++_epoch; // A pre-stop snapshot must not reintroduce the withdrawn position.
     final id = sessionId;
     _cancelAcquisition();
     _notify();
-    if (id != null && validAccount)
+    if (id != null && validAccount) {
       await _remoteStop(id, pause ? 'pause' : 'stop');
+    }
     await refresh();
   }
 
@@ -314,8 +336,9 @@ class LiveMapStore extends ChangeNotifier {
     _cancelAcquisition();
     snapshot = null;
     _notify();
-    if (shouldPause && id != null && validAccount)
+    if (shouldPause && id != null && validAccount) {
       await _remoteStop(id, 'pause');
+    }
   }
 
   Future<void> resume() => enter(sessionId);

@@ -2,118 +2,251 @@ import 'package:flutter/material.dart';
 
 class LayoverColors {
   const LayoverColors._();
-
-  static const ink = Color(0xFF171717);
-  static const paper = Color(0xFFF5F8F7);
-  static const mint = Color(0xFF7AC49B);
-  static const blue = Color(0xFF6EC6E9);
-  static const coral = Color(0xFFF78086);
-  static const mango = Color(0xFFF6B63D);
-  static const lilac = Color(0xFFC8C2F2);
+  static const ink = Color(0xFF20211F);
+  static const paper = Color(0xFFF6F5F1);
+  static const muted = Color(0xFF696A65);
+  static const line = Color(0xFFD5D5CF);
+  static const wash = Color(0xFFECEDE7);
+  static const mint = Color(0xFFB8C9AE);
+  static const blue = wash;
+  static const coral = wash;
+  static const mango = wash;
+  static const lilac = wash;
 }
 
 ThemeData buildLayoverTheme() {
-  final scheme = ColorScheme.fromSeed(
-    seedColor: LayoverColors.mint,
-    brightness: Brightness.light,
-    primary: LayoverColors.ink,
-    surface: LayoverColors.paper,
+  const ink = LayoverColors.ink;
+  const paper = LayoverColors.paper;
+  final outline = RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(22),
+    side: const BorderSide(color: ink),
   );
-
-  return ThemeData(
+  const scheme = ColorScheme.light(
+    primary: ink,
+    onPrimary: Colors.white,
+    secondary: ink,
+    onSecondary: Colors.white,
+    primaryContainer: LayoverColors.wash,
+    onPrimaryContainer: ink,
+    secondaryContainer: ink,
+    onSecondaryContainer: Colors.white,
+    tertiary: LayoverColors.muted,
+    surface: paper,
+    onSurface: ink,
+    onSurfaceVariant: LayoverColors.muted,
+    surfaceContainerHighest: LayoverColors.wash,
+    outline: LayoverColors.muted,
+    outlineVariant: LayoverColors.line,
+    error: Color(0xFFA1392E),
+  );
+  final base = ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
-    scaffoldBackgroundColor: LayoverColors.paper,
-    fontFamily: 'Roboto',
+    fontFamily: 'Lato',
+  );
+  return base.copyWith(
+    scaffoldBackgroundColor: paper,
+    textTheme: base.textTheme.copyWith(
+      displaySmall: const TextStyle(
+        fontFamily: 'Lato',
+        fontSize: 48,
+        height: 1.04,
+        letterSpacing: -2.2,
+        fontWeight: FontWeight.w900,
+        color: ink,
+      ),
+      headlineMedium: const TextStyle(
+        fontFamily: 'Lato',
+        fontSize: 34,
+        height: 1.08,
+        letterSpacing: -1.2,
+        fontWeight: FontWeight.w400,
+        color: ink,
+      ),
+      titleLarge: const TextStyle(
+        fontFamily: 'Lato',
+        fontSize: 22,
+        height: 1.2,
+        letterSpacing: -.5,
+        fontWeight: FontWeight.w700,
+        color: ink,
+      ),
+      titleMedium: const TextStyle(
+        fontFamily: 'Lato',
+        fontSize: 16,
+        height: 1.3,
+        fontWeight: FontWeight.w700,
+        color: ink,
+      ),
+      bodyLarge: const TextStyle(
+        fontFamily: 'Lato',
+        fontSize: 16,
+        height: 1.45,
+        color: ink,
+      ),
+      bodyMedium: const TextStyle(
+        fontFamily: 'Lato',
+        fontSize: 14,
+        height: 1.45,
+        color: ink,
+      ),
+      labelLarge: const TextStyle(
+        fontFamily: 'Lato',
+        fontSize: 14,
+        fontWeight: FontWeight.w700,
+        color: ink,
+      ),
+    ),
     cardTheme: CardThemeData(
       color: Colors.white,
+      surfaceTintColor: Colors.transparent,
       elevation: 0,
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: const BorderSide(color: Color(0xFFDCE5E1)),
-      ),
-    ),
-    inputDecorationTheme: const InputDecorationTheme(
-      border: OutlineInputBorder(),
-      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
-    ),
-    navigationBarTheme: const NavigationBarThemeData(
-      backgroundColor: Colors.white,
-      indicatorColor: Color(0xFFD5EBDD),
-    ),
-    textTheme: const TextTheme(
-      displaySmall: TextStyle(
-        fontSize: 32,
-        height: 1,
-        fontWeight: FontWeight.w900,
-        color: LayoverColors.ink,
-      ),
-      headlineMedium: TextStyle(
-        fontSize: 24,
-        height: 1.1,
-        fontWeight: FontWeight.w900,
-        color: LayoverColors.ink,
-      ),
-      titleLarge: TextStyle(
-        fontSize: 18,
-        height: 1.2,
-        fontWeight: FontWeight.w800,
-        color: LayoverColors.ink,
-      ),
-      titleMedium: TextStyle(
-        fontSize: 15,
-        height: 1.2,
-        fontWeight: FontWeight.w800,
-        color: LayoverColors.ink,
-      ),
-      bodyLarge: TextStyle(
-        fontSize: 15,
-        height: 1.35,
-        fontWeight: FontWeight.w500,
-        color: LayoverColors.ink,
-      ),
-      bodyMedium: TextStyle(
-        fontSize: 13,
-        height: 1.35,
-        fontWeight: FontWeight.w500,
-        color: LayoverColors.ink,
-      ),
-      labelLarge: TextStyle(
-        fontSize: 13,
-        fontWeight: FontWeight.w900,
-        color: LayoverColors.ink,
-      ),
-      labelMedium: TextStyle(
-        fontSize: 11,
-        fontWeight: FontWeight.w800,
-        color: LayoverColors.ink,
-      ),
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      shape: outline,
+      clipBehavior: Clip.antiAlias,
     ),
     appBarTheme: const AppBarTheme(
-      backgroundColor: Colors.transparent,
-      foregroundColor: LayoverColors.ink,
+      backgroundColor: paper,
+      surfaceTintColor: Colors.transparent,
+      foregroundColor: ink,
       elevation: 0,
+      scrolledUnderElevation: 0,
       centerTitle: false,
+      toolbarHeight: 72,
+      titleTextStyle: TextStyle(
+        fontFamily: 'Lato',
+        fontSize: 23,
+        fontWeight: FontWeight.w900,
+        letterSpacing: -.8,
+        color: ink,
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(18),
+        borderSide: const BorderSide(color: LayoverColors.line),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(18),
+        borderSide: const BorderSide(color: ink, width: 2),
+      ),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: LayoverColors.mango,
-        foregroundColor: LayoverColors.ink,
-        elevation: 0,
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
-          side: const BorderSide(color: LayoverColors.ink, width: 1.5),
+        backgroundColor: ink,
+        foregroundColor: Colors.white,
+        minimumSize: const Size(48, 52),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        shape: const StadiumBorder(),
+        textStyle: const TextStyle(
+          fontFamily: 'Lato',
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
         ),
-        textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: ink,
+        minimumSize: const Size(48, 50),
+        side: const BorderSide(color: ink),
+        shape: const StadiumBorder(),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: ink,
+        minimumSize: const Size(48, 48),
       ),
     ),
     iconButtonTheme: IconButtonThemeData(
       style: IconButton.styleFrom(
-        foregroundColor: LayoverColors.ink,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        foregroundColor: ink,
+        minimumSize: const Size(48, 48),
+        shape: const CircleBorder(),
       ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: paper,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      height: 76,
+      indicatorColor: ink,
+      iconTheme: WidgetStateProperty.resolveWith(
+        (states) => IconThemeData(
+          size: 23,
+          color: states.contains(WidgetState.selected) ? Colors.white : ink,
+        ),
+      ),
+      labelTextStyle: WidgetStateProperty.all(
+        const TextStyle(
+          fontFamily: 'Lato',
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: ink,
+        ),
+      ),
+    ),
+    navigationRailTheme: const NavigationRailThemeData(
+      backgroundColor: paper,
+      indicatorColor: ink,
+      selectedIconTheme: IconThemeData(color: Colors.white),
+      unselectedIconTheme: IconThemeData(color: ink),
+    ),
+    chipTheme: ChipThemeData(
+      backgroundColor: paper,
+      selectedColor: ink,
+      checkmarkColor: Colors.white,
+      labelStyle: TextStyle(
+        color: WidgetStateColor.resolveWith(
+          (states) =>
+              states.contains(WidgetState.selected) ? Colors.white : ink,
+        ),
+        fontFamily: 'Lato',
+        fontSize: 13,
+      ),
+      shape: const StadiumBorder(),
+      side: const BorderSide(color: LayoverColors.line),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: paper,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: paper,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+    ),
+    dividerTheme: const DividerThemeData(
+      color: LayoverColors.line,
+      thickness: 1,
+      space: 28,
+    ),
+    listTileTheme: const ListTileThemeData(
+      contentPadding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+      iconColor: ink,
+    ),
+    progressIndicatorTheme: const ProgressIndicatorThemeData(
+      color: ink,
+      linearTrackColor: LayoverColors.line,
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: ink,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    ),
+    badgeTheme: const BadgeThemeData(
+      backgroundColor: ink,
+      textColor: Colors.white,
     ),
   );
 }

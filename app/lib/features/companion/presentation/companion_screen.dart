@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -7,11 +8,13 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../app/theme.dart';
+import '../../../app/travel_sketch.dart';
 import '../data/trip_store.dart';
 import '../data/push_notifications.dart';
 import '../domain/models.dart';
 import 'forms.dart';
 import '../../live_map/presentation/live_map_screen.dart';
+import '../../trip_explorer/presentation/explorer_screen.dart';
 
 class CompanionScreen extends StatefulWidget {
   const CompanionScreen({super.key, required this.store});
@@ -29,6 +32,8 @@ class _CompanionScreenState extends State<CompanionScreen>
   String moneyView = 'Pot';
   String? startupError;
   String? inviteToken;
+  String? _pushUser;
+  String? _screenAccount;
   static const labels = ['Overview', 'Plan', 'Money', 'Bookings', 'Group'];
   static const icons = [
     Icons.dashboard_outlined,
@@ -41,13 +46,14 @@ class _CompanionScreenState extends State<CompanionScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    store.addListener(_restorePushAfterSignIn);
     initialize();
   }
 
   Future<void> initialize() async {
     try {
       await store.initialize();
-      await PushNotifications.restore(store);
+      _restorePushAfterSignIn();
       inviteToken = Uri.base.queryParameters['invite'];
     } catch (e) {
       startupError = friendlyError(e);
@@ -55,15 +61,44 @@ class _CompanionScreenState extends State<CompanionScreen>
     if (mounted) setState(() => ready = true);
   }
 
+  void _restorePushAfterSignIn() {
+    final account = store.client?.auth.currentUser?.id;
+    if (_screenAccount != account) {
+      final previous = _screenAccount;
+      _screenAccount = account;
+      if (previous != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+        });
+      }
+    }
+    final user = store.signedIn && !store.demo ? store.userId : null;
+    if (_pushUser == user) return;
+    _pushUser = user;
+    if (user != null) {
+      unawaited(
+        PushNotifications.restore(store).catchError((Object _) {
+          // Optional push registration must not interrupt the shared trip view.
+        }),
+      );
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) store.refresh(silent: true);
+    store.setForeground(state == AppLifecycleState.resumed);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    store.removeListener(_restorePushAfterSignIn);
     super.dispose();
+  }
+
+  void selectTab(int index) {
+    setState(() => tab = index);
+    unawaited(store.refresh(silent: true));
   }
 
   void message(String value) {
@@ -133,6 +168,8 @@ class _CompanionScreenState extends State<CompanionScreen>
   }
 
   Future<void> createTrip({bool duplicate = false, bool edit = false}) async {
+    final originalTrip = store.trip;
+    final editingUser = store.userId;
     final values = await showFields(
       context,
       edit
@@ -148,20 +185,20 @@ class _CompanionScreenState extends State<CompanionScreen>
       },
       initial: edit
           ? {
-              'title': store.trip!.title,
-              'destination': store.trip!.destination,
-              'start_date': store.trip!.start,
-              'end_date': store.trip!.end,
+              'title': originalTrip!.title,
+              'destination': originalTrip.destination,
+              'start_date': originalTrip.start,
+              'end_date': originalTrip.end,
             }
           : duplicate
           ? {
-              'title': '${store.trip!.title} again',
-              'destination': store.trip!.destination,
+              'title': '${originalTrip!.title} again',
+              'destination': originalTrip.destination,
             }
           : {},
       optional: {'destination', 'start_date', 'end_date'},
     );
-    if (values == null) return;
+    if (values == null || store.userId != editingUser) return;
     try {
       final start = values['start_date'] as String;
       final end = values['end_date'] as String;
@@ -178,10 +215,10 @@ class _CompanionScreenState extends State<CompanionScreen>
             : 'create_trip',
         {
           ...values,
-          if (duplicate) 'source_id': store.selectedTrip,
+          if (duplicate) 'source_id': originalTrip!.id,
           if (edit) ...{
-            'trip_id': store.selectedTrip,
-            'expected_updated_at': store.trip!.data['updated_at'],
+            'trip_id': originalTrip!.id,
+            'expected_updated_at': originalTrip.data['updated_at'],
           },
         },
       );
@@ -205,18 +242,20 @@ class _CompanionScreenState extends State<CompanionScreen>
   }
 
   Future<void> addEntry(String kind, {TripEntry? entry}) async {
+    final user = store.userId;
     final data = await showEntryForm(context, store, kind, entry: entry);
-    if (data != null) await run('save_entry', data);
+    if (data != null && user == store.userId) await run('save_entry', data);
   }
 
   Future<void> addMoney({bool pot = false, Json? initial}) async {
+    final user = store.userId;
     final data = await showMoneyForm(
       context,
       store,
       pot: pot,
       initial: initial,
     );
-    if (data == null) return;
+    if (data == null || user != store.userId) return;
     if (store.offline && !pot) {
       await store.saveDraft(data);
       message('Expense draft saved on this device.');
@@ -227,18 +266,23 @@ class _CompanionScreenState extends State<CompanionScreen>
       data['amount_minor'] as int,
       Map<String, int>.from(data['weights'] as Map),
       mode: SplitMode.values.byName(data['split_mode'] as String),
-      remainderUser: pot ? store.trip!.organizer : null,
+      remainderUser: pot
+          ? store.snapshot.trips
+                .firstWhere((t) => t.id == data['trip_id'])
+                .organizer
+          : null,
     );
     final summary = shares.entries
         .map(
           (e) =>
-              '${store.snapshot.name(store.selectedTrip!, e.key)}: ${money(e.value)}',
+              '${store.snapshot.name(data['trip_id'] as String, e.key)}: ${money(e.value)}',
         )
         .join('\n');
     if (await confirm(
       pot ? 'Propose these shares?' : 'Record this expense?',
       '$summary${pot ? '\n\nEvery participant must accept these terms.' : ''}',
     )) {
+      if (user != store.userId) return;
       await run(pot ? 'save_pot' : 'add_expense', data);
     }
   }
@@ -248,6 +292,7 @@ class _CompanionScreenState extends State<CompanionScreen>
     Json? pot,
     Transfer? correction,
   }) async {
+    final user = store.userId;
     final data = await showTransferForm(
       context,
       store,
@@ -255,7 +300,9 @@ class _CompanionScreenState extends State<CompanionScreen>
       pot: pot,
       correction: correction,
     );
-    if (data != null) await run('report_transfer', data);
+    if (data != null && user == store.userId) {
+      await run('report_transfer', data);
+    }
   }
 
   Future<void> exportExpenses() async {
@@ -330,14 +377,22 @@ class _CompanionScreenState extends State<CompanionScreen>
       return Scaffold(
         appBar: AppBar(
           title: const Text('Layover'),
+          titleSpacing: 24,
           actions: [
             if (store.demo)
               const Padding(
                 padding: EdgeInsets.only(right: 8),
-                child: Center(child: Text('Demo')),
+                child: Center(
+                  child: Text(
+                    'DEMO',
+                    style: TextStyle(fontSize: 10, letterSpacing: 1.5),
+                  ),
+                ),
               ),
             IconButton(
-              tooltip: 'Refresh',
+              tooltip: store.lastSyncedAt == null
+                  ? 'Sync now'
+                  : 'Sync now · Updated ${DateFormat('HH:mm:ss').format(store.lastSyncedAt!)}',
               onPressed: store.loading ? null : () => store.refresh(),
               icon: const Icon(Icons.refresh),
             ),
@@ -392,7 +447,7 @@ class _CompanionScreenState extends State<CompanionScreen>
                   if (wide)
                     NavigationRail(
                       selectedIndex: tab,
-                      onDestinationSelected: (i) => setState(() => tab = i),
+                      onDestinationSelected: selectTab,
                       labelType: NavigationRailLabelType.all,
                       destinations: [
                         for (var i = 0; i < labels.length; i++)
@@ -406,11 +461,19 @@ class _CompanionScreenState extends State<CompanionScreen>
                     child: RefreshIndicator(
                       onRefresh: () => store.refresh(),
                       child: SingleChildScrollView(
+                        key: PageStorageKey(
+                          '${store.userId}/${store.selectedTrip}/$tab',
+                        ),
                         physics: const AlwaysScrollableScrollPhysics(),
-                        padding: EdgeInsets.all(wide ? 28 : 16),
+                        padding: EdgeInsets.fromLTRB(
+                          wide ? 36 : 22,
+                          8,
+                          wide ? 36 : 22,
+                          32,
+                        ),
                         child: Center(
                           child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 1000),
+                            constraints: const BoxConstraints(maxWidth: 960),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
@@ -424,8 +487,7 @@ class _CompanionScreenState extends State<CompanionScreen>
                                     ),
                                   ),
                                 const SizedBox(height: 24),
-                                if (tab == 0 || store.trip == null)
-                                  liveMapCard(),
+                                if (store.trip == null) liveMapCard(),
                                 if (store.trip == null)
                                   empty(
                                     'Your next trip starts here',
@@ -471,7 +533,7 @@ class _CompanionScreenState extends State<CompanionScreen>
             ? null
             : NavigationBar(
                 selectedIndex: tab,
-                onDestinationSelected: (i) => setState(() => tab = i),
+                onDestinationSelected: selectTab,
                 destinations: [
                   for (var i = 0; i < labels.length; i++)
                     NavigationDestination(
@@ -483,65 +545,80 @@ class _CompanionScreenState extends State<CompanionScreen>
       );
     },
   );
-  Widget tripSelector() => Wrap(
-    spacing: 12,
-    runSpacing: 12,
-    crossAxisAlignment: WrapCrossAlignment.center,
+  Widget tripSelector() => Row(
     children: [
-      if (store.snapshot.trips.isNotEmpty)
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
-          child: DropdownButtonFormField<String>(
-            key: ValueKey(store.selectedTrip),
-            initialValue: store.selectedTrip,
-            isExpanded: true,
-            decoration: const InputDecoration(
-              labelText: 'Your trips',
-              prefixIcon: Icon(Icons.luggage_outlined),
-            ),
-            items: [
-              for (final t in store.snapshot.trips)
-                DropdownMenuItem(
-                  value: t.id,
-                  child: Text(t.title, overflow: TextOverflow.ellipsis),
+      Expanded(
+        child: store.snapshot.trips.isEmpty
+            ? const Text(
+                'A little further, together.',
+                style: TextStyle(color: LayoverColors.muted),
+              )
+            : DropdownButtonFormField<String>(
+                key: ValueKey(store.selectedTrip),
+                initialValue: store.selectedTrip,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Your trips',
+                  prefixIcon: Icon(Icons.luggage_outlined, size: 20),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                 ),
-            ],
-            onChanged: (v) {
-              store.selectTrip(v!);
-              setState(() => tab = 0);
-            },
-          ),
-        ),
-      IconButton(
-        tooltip: 'Create trip',
-        onPressed: store.offline ? null : () => createTrip(),
-        icon: const Icon(Icons.add),
+                items: [
+                  for (final t in store.snapshot.trips)
+                    DropdownMenuItem(
+                      value: t.id,
+                      child: Text(t.title, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: (v) {
+                  if (v == null) return;
+                  store.selectTrip(v);
+                  setState(() => tab = 0);
+                },
+              ),
       ),
-      if (store.organizer)
-        IconButton(
-          tooltip: 'Edit trip',
-          onPressed: canEdit ? () => createTrip(edit: true) : null,
-          icon: const Icon(Icons.edit_outlined),
-        ),
-      IconButton(
-        tooltip: 'Join trip',
-        onPressed: store.offline ? null : joinTrip,
-        icon: const Icon(Icons.group_add_outlined),
+      const SizedBox(width: 8),
+      PopupMenuButton<String>(
+        tooltip: 'Trip actions',
+        icon: const Icon(Icons.more_horiz),
+        onSelected: (action) {
+          if (action == 'create') createTrip();
+          if (action == 'edit') createTrip(edit: true);
+          if (action == 'join') joinTrip();
+        },
+        itemBuilder: (_) => [
+          PopupMenuItem(
+            value: 'create',
+            enabled: !store.offline,
+            child: const Text('Create trip'),
+          ),
+          if (store.organizer)
+            PopupMenuItem(
+              value: 'edit',
+              enabled: canEdit,
+              child: const Text('Edit trip'),
+            ),
+          PopupMenuItem(
+            value: 'join',
+            enabled: !store.offline,
+            child: const Text('Join trip'),
+          ),
+        ],
       ),
     ],
   );
   Widget liveMapCard() => Card(
-    color: const Color(0xFFD5EBDD),
+    color: Colors.white,
     child: ListTile(
-      contentPadding: const EdgeInsets.all(16),
-      leading: const Icon(Icons.map_outlined, size: 36),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+      leading: const Icon(Icons.near_me_outlined, size: 28),
       title: const Text(
         'Live Map · Find your group',
         style: TextStyle(fontWeight: FontWeight.bold),
       ),
-      subtitle: const Text(
-        'A private map for your group. Share only when you choose.',
-      ),
+      subtitle: const Text('A little lost? Find each other here.'),
       trailing: const Icon(Icons.arrow_forward),
       onTap: () => Navigator.of(context).push(
         MaterialPageRoute<void>(
@@ -566,90 +643,145 @@ class _CompanionScreenState extends State<CompanionScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    t.title,
-                    style: Theme.of(context).textTheme.headlineMedium,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    [
-                      t.destination,
+        Text(
+          'ALL TOGETHER, SOMEWHERE NEW',
+          style: Theme.of(context).textTheme.labelSmall
+              ?.copyWith(letterSpacing: 2, color: LayoverColors.muted),
+        ),
+        const SizedBox(height: 12),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final details = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(t.title, style: Theme.of(context).textTheme.displaySmall),
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    if (t.destination.isNotEmpty)
+                      Text(
+                        t.destination,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    Text(
                       t.start.isEmpty
                           ? 'Dates to decide'
-                          : '${t.start} to ${t.end}',
-                    ].where((s) => s.isNotEmpty).join('\n'),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '${store.members.where((m) => m.active).length} travelers',
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
+                          : '${tripDate(t.start)} – ${tripDate(t.end)}',
+                      style: const TextStyle(color: LayoverColors.muted),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    for (final m
+                        in store.members.where((m) => m.active).take(3))
+                      Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: CircleAvatar(
+                          radius: 15,
+                          backgroundColor: LayoverColors.ink,
+                          child: Text(
+                            m.name.isEmpty ? '?' : m.name[0],
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '${store.members.where((m) => m.active).length} travelers',
+                        style: const TextStyle(color: LayoverColors.muted),
+                      ),
+                    ),
+                    if (store.organizer)
+                      IconButton(
+                        tooltip: 'Invite friends',
+                        onPressed: canEdit ? invite : null,
+                        icon: const Icon(Icons.person_add_alt, size: 21),
+                      ),
+                  ],
+                ),
+              ],
+            );
+            if (constraints.maxWidth >= 650) {
+              return Row(
+                children: [
+                  Expanded(child: details),
+                  const Expanded(child: TravelSketch(height: 220)),
                 ],
-              ),
-            ),
-            if (store.organizer)
-              IconButton(
-                tooltip: 'Invite friends',
-                onPressed: canEdit ? invite : null,
-                icon: const Icon(Icons.person_add_alt),
-              ),
-          ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [details, const TravelSketch(height: 185)],
+            );
+          },
         ),
-        if (store.demo) ...[
-          const SizedBox(height: 20),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.network(
-              'https://images.unsplash.com/photo-1512343879784-a960bf40e7f2?auto=format&fit=crop&w=1200&q=80',
-              height: 180,
-              width: double.infinity,
-              fit: BoxFit.cover,
-              semanticLabel: 'Goa coastline',
-              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+        const SizedBox(height: 24),
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: LayoverColors.ink),
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) => Wrap(
+              spacing: 20,
+              runSpacing: 22,
+              children: [
+                stat(
+                  'Pot target',
+                  store.offline
+                      ? 'Unavailable offline'
+                      : pot == null
+                      ? 'Not set'
+                      : money(pot['target_minor_units'] as int),
+                  LayoverColors.mint,
+                ),
+                stat(
+                  'Recorded expenses',
+                  store.offline
+                      ? 'Unavailable offline'
+                      : money(
+                          store.snapshot
+                              .expenses(t.id)
+                              .where((e) => !e.voided)
+                              .fold(0, (sum, e) => sum + e.amount),
+                        ),
+                  LayoverColors.coral,
+                ),
+                stat(
+                  'Tasks completed',
+                  '${tasks.where((e) => e.done).length} / ${tasks.length}',
+                  LayoverColors.blue,
+                ),
+              ],
             ),
           ),
-        ],
-        const SizedBox(height: 24),
-        Wrap(
-          spacing: 28,
-          runSpacing: 16,
-          children: [
-            stat(
-              'Pot target',
-              store.offline
-                  ? 'Unavailable offline'
-                  : pot == null
-                  ? 'Not set'
-                  : money(pot['target_minor_units'] as int),
-              LayoverColors.mint,
-            ),
-            stat(
-              'Recorded expenses',
-              store.offline
-                  ? 'Unavailable offline'
-                  : money(
-                      store.snapshot
-                          .expenses(t.id)
-                          .where((e) => !e.voided)
-                          .fold(0, (sum, e) => sum + e.amount),
-                    ),
-              LayoverColors.coral,
-            ),
-            stat(
-              'Tasks completed',
-              '${tasks.where((e) => e.done).length} / ${tasks.length}',
-              LayoverColors.blue,
-            ),
-          ],
         ),
-        const SizedBox(height: 28),
+        const SizedBox(height: 18),
+        liveMapCard(),
+        Card(
+          color: LayoverColors.wash,
+          child: ListTile(
+            leading: const Icon(Icons.travel_explore),
+            title: const Text('Explore within budget'),
+            subtitle: const Text('Good places. A budget that fits.'),
+            trailing: const Icon(Icons.arrow_forward),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ExplorerScreen(trip: store, tripId: t.id),
+              ),
+            ),
+          ),
+        ),
         for (final a in store.snapshot.entries(t.id, 'announcement'))
           entryTile(a),
         section(
@@ -694,8 +826,9 @@ class _CompanionScreenState extends State<CompanionScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        section(
-          'The plan',
+        PageIntro(
+          title: 'The plan',
+          subtitle: 'Big ideas, little detours. Make room for both.',
           action: PopupMenuButton<String>(
             tooltip: 'Add to plan',
             enabled: canEdit,
@@ -741,8 +874,9 @@ class _CompanionScreenState extends State<CompanionScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        section(
-          'Bookings',
+        PageIntro(
+          title: 'All booked.',
+          subtitle: 'Your stays, tickets and reservations, in one place.',
           action: IconButton(
             tooltip: 'Add booking',
             onPressed: canEdit ? () => addEntry('booking') : null,
@@ -901,7 +1035,7 @@ class _CompanionScreenState extends State<CompanionScreen>
                 ),
               if (e.kind == 'booking') ...[
                 const SizedBox(height: 8),
-                const Text('Organizer-reported booking'),
+                const Text('Group booking record'),
                 for (final field in {
                   'reference': 'Reference',
                   'cancellation': 'Cancellation',
@@ -1123,8 +1257,9 @@ class _CompanionScreenState extends State<CompanionScreen>
   Widget moneyPage() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      section(
-        'Money',
+      PageIntro(
+        title: 'A shared adventure.\nA shared pot.',
+        subtitle: 'Keep the spending clear and the trip easy.',
         action: IconButton(
           tooltip: 'Export expenses CSV',
           onPressed: store.offline ? null : exportExpenses,
@@ -1332,6 +1467,14 @@ class _CompanionScreenState extends State<CompanionScreen>
                             10,
                           ),
                           'cover': (covered / 100).toStringAsFixed(2),
+                          'shares': {
+                            for (final o in obligations)
+                              if (![
+                                'cancelled',
+                                'waived',
+                              ].contains(o['obligation_status']))
+                                o['user_id'] as String: o['amount_minor_units'],
+                          },
                         },
                       )
                     : null,
@@ -1365,16 +1508,16 @@ class _CompanionScreenState extends State<CompanionScreen>
   }
 
   Future<void> recordOutcome(String status) async {
+    final tripId = store.selectedTrip;
+    final user = store.userId;
     if (await confirm(
       status == 'booked' ? 'Record booking?' : 'Cancel pot?',
       status == 'booked'
           ? 'This records your booking decision. Add the confirmation under Bookings.'
           : 'Recorded transfers stay in the ledger. Any repayments must be made externally and acknowledged by the recipient.',
     )) {
-      await run('pot_outcome', {
-        'trip_id': store.selectedTrip,
-        'status': status,
-      });
+      if (user != store.userId) return;
+      await run('pot_outcome', {'trip_id': tripId, 'status': status});
     }
   }
 
@@ -1524,7 +1667,7 @@ class _CompanionScreenState extends State<CompanionScreen>
       Align(
         alignment: Alignment.centerLeft,
         child: FilledButton.icon(
-          onPressed: canEdit && store.members.length > 1
+          onPressed: canEdit && store.members.where((m) => m.active).length > 1
               ? () => reportTransfer()
               : null,
           icon: const Icon(Icons.add),
@@ -1687,8 +1830,9 @@ class _CompanionScreenState extends State<CompanionScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        section(
-          'Travelers',
+        PageIntro(
+          title: 'Your kind of people.',
+          subtitle: 'The travelers making this trip happen.',
           action: store.organizer
               ? IconButton(
                   tooltip: 'Invite friends',
@@ -1701,7 +1845,8 @@ class _CompanionScreenState extends State<CompanionScreen>
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: CircleAvatar(
-              backgroundColor: LayoverColors.blue.withValues(alpha: .3),
+              backgroundColor: LayoverColors.wash,
+              foregroundColor: LayoverColors.ink,
               child: Text(m.name.isEmpty ? '?' : m.name[0]),
             ),
             title: Text(m.name),
@@ -2101,20 +2246,17 @@ class _CompanionScreenState extends State<CompanionScreen>
     ),
   );
   Widget stat(String label, String value, Color color) => ConstrainedBox(
-    constraints: const BoxConstraints(minWidth: 170),
-    child: Container(
-      padding: const EdgeInsets.only(left: 12),
-      decoration: BoxDecoration(
-        border: Border(left: BorderSide(color: color, width: 4)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label),
-          const SizedBox(height: 6),
-          Text(value, style: Theme.of(context).textTheme.titleLarge),
-        ],
-      ),
+    constraints: const BoxConstraints(minWidth: 115),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12, color: LayoverColors.muted),
+        ),
+        const SizedBox(height: 7),
+        Text(value, style: Theme.of(context).textTheme.titleLarge),
+      ],
     ),
   );
   Widget empty(String text, {required IconData icon, Widget? action}) =>
@@ -2122,13 +2264,28 @@ class _CompanionScreenState extends State<CompanionScreen>
         padding: const EdgeInsets.symmetric(vertical: 36),
         child: Column(
           children: [
-            Icon(icon, size: 36, color: const Color(0xFF68716D)),
+            Container(
+              padding: const EdgeInsets.all(22),
+              decoration: const BoxDecoration(
+                color: LayoverColors.wash,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, size: 36, color: LayoverColors.ink),
+            ),
             const SizedBox(height: 12),
             Text(text, textAlign: TextAlign.center),
             if (action != null) ...[const SizedBox(height: 16), action],
           ],
         ),
       );
+}
+
+String tripDate(String value) {
+  try {
+    return DateFormat('d MMM').format(DateTime.parse(value));
+  } catch (_) {
+    return value;
+  }
 }
 
 String formatDate(String value) {
@@ -2147,106 +2304,110 @@ class SignInScreen extends StatefulWidget {
 }
 
 class _SignInScreenState extends State<SignInScreen> {
-  final email = TextEditingController();
-  final token = TextEditingController();
-  bool sent = false;
   bool busy = false;
-  String? error;
-  @override
-  void dispose() {
-    email.dispose();
-    token.dispose();
-    super.dispose();
-  }
+  String? error = Uri.base.queryParameters.containsKey('error')
+      ? 'Sign-in could not be completed. Please try again.'
+      : null;
+  String? status;
 
-  Future<void> submit() async {
-    setState(() => busy = true);
+  Future<void> signIn() async {
+    setState(() {
+      busy = true;
+      error = null;
+      status = null;
+    });
     try {
-      if (sent) {
-        await widget.store.verifyOtp(email.text, token.text);
-        await PushNotifications.restore(widget.store);
-      } else {
-        await widget.store.sendOtp(email.text);
-        sent = true;
+      await widget.store.signInWithGoogle();
+      if (mounted) {
+        setState(
+          () => status =
+              'Finish signing in with Google in your browser. '
+              'If you closed it, tap Continue with Google to try again.',
+        );
       }
     } catch (e) {
-      error = friendlyError(e);
+      if (mounted) setState(() => error = friendlyError(e));
     } finally {
       if (mounted) setState(() => busy = false);
     }
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    body: SafeArea(
-      child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Icon(Icons.flight_takeoff, size: 48),
-                const SizedBox(height: 24),
-                Text(
-                  'Layover',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 32),
-                if (widget.store.configured) ...[
-                  TextField(
-                    controller: email,
-                    enabled: !sent,
-                    keyboardType: TextInputType.emailAddress,
-                    autofillHints: const [AutofillHints.email],
-                    decoration: const InputDecoration(labelText: 'Email'),
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.store,
+    builder: (context, _) => Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(28),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Layover',
+                        style: Theme.of(context).textTheme.titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w900),
+                      ),
+                      const Spacer(),
+                      const Icon(Icons.north_east, size: 24),
+                    ],
                   ),
-                  if (sent) ...[
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: token,
-                      keyboardType: TextInputType.number,
-                      autofillHints: const [AutofillHints.oneTimeCode],
-                      decoration: const InputDecoration(
-                        labelText: 'Email verification code',
+                  const SizedBox(height: 44),
+                  Text(
+                    'Less planning.\nMore going.',
+                    style:
+                        Theme.of(context).textTheme.displaySmall ??
+                        const TextStyle(
+                          fontSize: 46,
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'A good trip starts with your people.\nBring the plans, the pot and everyone together.',
+                    style: TextStyle(color: LayoverColors.muted, height: 1.6),
+                  ),
+                  const SizedBox(height: 16),
+                  const TravelSketch(height: 210),
+                  const SizedBox(height: 28),
+                  if (widget.store.configured) ...[
+                    FilledButton(
+                      onPressed: busy ? null : signIn,
+                      child: Text(
+                        busy ? 'Opening Google…' : 'Continue with Google',
                       ),
                     ),
-                  ],
-                  if (error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 16),
-                      child: Text(
-                        error!,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.error,
+                    if (error ?? widget.store.authError ?? status
+                        case final message?)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 16),
+                        child: Semantics(
+                          liveRegion: true,
+                          child: Text(
+                            message,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color:
+                                  error != null ||
+                                      widget.store.authError != null
+                                  ? Theme.of(context).colorScheme.error
+                                  : null,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  const SizedBox(height: 20),
-                  FilledButton(
-                    onPressed: busy ? null : submit,
-                    child: Text(
-                      busy
-                          ? 'Please wait...'
-                          : sent
-                          ? 'Verify code'
-                          : 'Send sign-in code',
-                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: busy ? null : () => widget.store.startDemo(),
+                    child: const Text('Explore demo trip'),
                   ),
-                  if (sent)
-                    TextButton(
-                      onPressed: () => setState(() => sent = false),
-                      child: const Text('Use a different email'),
-                    ),
                 ],
-                const SizedBox(height: 12),
-                OutlinedButton(
-                  onPressed: () => widget.store.startDemo(),
-                  child: const Text('Explore demo trip'),
-                ),
-              ],
+              ),
             ),
           ),
         ),

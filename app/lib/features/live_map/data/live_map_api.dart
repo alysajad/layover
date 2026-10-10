@@ -66,8 +66,9 @@ class DemoLiveMapApi extends LiveMapApi {
     final s = _sessions[id];
     if (s == null ||
         !['created', 'active'].contains(s['status']) ||
-        DateTime.parse(s['expires_at'] as String).isBefore(DateTime.now()))
+        DateTime.parse(s['expires_at'] as String).isBefore(DateTime.now())) {
       throw const FormatException('Session ended or expired.');
+    }
     return {
       'server_time': now,
       'session': {...s},
@@ -149,7 +150,7 @@ class DemoLiveMapApi extends LiveMapApi {
           : 'stopped';
       me['generation'] = generation;
       _locations[id]?.removeWhere((l) => l['user_id'] == trip.userId);
-      if (action == 'consent')
+      if (action == 'consent') {
         (_locations[id] ??= []).add({
           'user_id': trip.userId,
           'latitude': 15.498,
@@ -157,6 +158,7 @@ class DemoLiveMapApi extends LiveMapApi {
           'accuracy_m': 12,
           'received_at': now,
         });
+      }
       return {'session_id': id, 'generation': generation};
     }
     return {'session_id': id};

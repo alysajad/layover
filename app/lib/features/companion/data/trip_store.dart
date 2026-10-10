@@ -12,7 +12,12 @@ import '../domain/models.dart';
 const uuid = Uuid();
 
 class TripStore extends ChangeNotifier {
-  TripStore({this.client, this.persistence = true});
+  TripStore({
+    this.client,
+    this.persistence = true,
+    this.syncInterval = const Duration(seconds: 5),
+  });
+  final Duration syncInterval;
   final SupabaseClient? client;
   final bool persistence;
   TripSnapshot snapshot = TripSnapshot.empty();
@@ -21,6 +26,7 @@ class TripStore extends ChangeNotifier {
   bool offline = false;
   bool demo = false;
   String? error;
+  String? authError;
   String? selectedTrip;
   String demoUser = 'demo-asha';
   List<Json> drafts = [];
@@ -29,6 +35,13 @@ class TripStore extends ChangeNotifier {
   Timer? _refreshTimer;
   bool _disposed = false;
   Json? _retry;
+  Future<void>? _refreshFuture;
+  String? _accountId;
+  int _epoch = 0;
+  int _syncFailures = 0;
+  bool _foreground = true;
+  bool _initialized = false;
+  DateTime? lastSyncedAt;
 
   String get userId => demo ? demoUser : client?.auth.currentUser?.id ?? '';
   bool get signedIn => demo || client?.auth.currentUser != null;
@@ -38,38 +51,82 @@ class TripStore extends ChangeNotifier {
   bool get organizer => trip?.organizer == userId;
   String get _cacheKey => 'layover.summary.$userId';
   String get _draftKey => 'layover.drafts.$userId';
-  String get _pendingKey => 'layover.pending.$userId';
   List<Member> get members =>
       selectedTrip == null ? [] : snapshot.members(selectedTrip!);
 
   Future<void> initialize() async {
+    if (_initialized) return;
+    _initialized = true;
     if (persistence) _prefs = await SharedPreferences.getInstance();
+    if (_disposed) return;
     if (client == null) {
       await startDemo();
-    } else {
-      _auth = client!.auth.onAuthStateChange.listen((event) async {
-        if (event.event == AuthChangeEvent.signedOut) {
-          snapshot = TripSnapshot.empty();
-          selectedTrip = null;
-          drafts = [];
-        } else if (!demo && signedIn) {
-          await refresh();
+      return;
+    }
+    _accountId = client!.auth.currentUser?.id;
+    _auth = client!.auth.onAuthStateChange.listen(
+      (event) {
+        final id = client!.auth.currentUser?.id;
+        if (id != _accountId || event.event == AuthChangeEvent.signedOut) {
+          _clearAccount();
+          _accountId = id;
+          demo = false;
         }
+        authError = null;
         _notify();
-      });
-      if (signedIn) await refresh();
+        if (!demo && signedIn) unawaited(refresh());
+      },
+      onError: (Object _) {
+        authError = 'Sign-in could not be completed. Please try again.';
+        _notify();
+      },
+    );
+    await refresh();
+  }
+
+  void _clearAccount() {
+    _epoch++;
+    _refreshTimer?.cancel();
+    _refreshFuture = null;
+    snapshot = TripSnapshot.empty();
+    selectedTrip = null;
+    drafts = [];
+    _retry = null;
+    busy = false;
+    loading = false;
+    offline = false;
+    error = null;
+    authError = null;
+    lastSyncedAt = null;
+    _syncFailures = 0;
+  }
+
+  bool _current(int epoch, String user) =>
+      !_disposed && _epoch == epoch && userId == user;
+
+  void _scheduleSync() {
+    _refreshTimer?.cancel();
+    if (_disposed || !_foreground || demo || !signedIn || client == null) {
+      return;
     }
-    if (client != null) {
-      _refreshTimer = Timer.periodic(const Duration(seconds: 45), (_) {
-        if (signedIn && !busy && !loading && !demo) {
-          unawaited(refresh(silent: true));
-        }
-      });
+    final multiplier = 1 << _syncFailures.clamp(0, 4);
+    final delay = Duration(
+      milliseconds: (syncInterval.inMilliseconds * multiplier).clamp(1, 60000),
+    );
+    _refreshTimer = Timer(delay, () => unawaited(refresh(silent: true)));
+  }
+
+  void setForeground(bool value) {
+    _foreground = value;
+    if (!value) {
+      _refreshTimer?.cancel();
+    } else {
+      unawaited(refresh(silent: true));
     }
-    _notify();
   }
 
   Future<void> startDemo() async {
+    _clearAccount();
     demo = true;
     final saved = _prefs?.getString('layover.demo.v2');
     try {
@@ -95,14 +152,35 @@ class TripStore extends ChangeNotifier {
   }
 
   void selectTrip(String id) {
+    if (!snapshot.trips.any((t) => t.id == id)) return;
     selectedTrip = id;
     _notify();
+    unawaited(refresh(silent: true));
   }
 
   void switchDemoUser(String id) {
     demoUser = id;
     _loadDrafts();
     _notify();
+  }
+
+  Future<void> signInWithGoogle() async {
+    if (client == null) {
+      throw const FormatException('Sign-in is not configured for this build.');
+    }
+    authError = null;
+    _notify();
+    final opened = await client!.auth.signInWithOAuth(
+      OAuthProvider.google,
+      redirectTo: Env.authRedirect(webUri: kIsWeb ? Uri.base : null),
+      authScreenLaunchMode: kIsWeb
+          ? LaunchMode.platformDefault
+          : LaunchMode.externalApplication,
+      queryParams: {'prompt': 'select_account'},
+    );
+    if (!opened) {
+      throw const FormatException('Could not open Google sign-in. Try again.');
+    }
   }
 
   Future<void> sendOtp(String email) async {
@@ -120,17 +198,18 @@ class TripStore extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
-    await _prefs?.remove(_cacheKey);
-    await _prefs?.remove(_draftKey);
-    if (!demo) await client?.auth.signOut();
+    final cacheKey = _cacheKey;
+    final draftKey = _draftKey;
+    final hadSession = client?.auth.currentSession != null;
+    _clearAccount();
     demo = false;
-    snapshot = TripSnapshot.empty();
-    drafts = [];
-    selectedTrip = null;
-    offline = false;
-    error = null;
-    _retry = null;
     _notify();
+    await _prefs?.remove(cacheKey);
+    await _prefs?.remove(draftKey);
+    // Local sign-out succeeds without a network connection. The server still
+    // authorizes every request; unresolved commands remain bound to this account.
+    if (hadSession) await client!.auth.signOut(scope: SignOutScope.local);
+    _accountId = null;
   }
 
   void _loadDrafts() {
@@ -141,28 +220,52 @@ class TripStore extends ChangeNotifier {
     }
   }
 
-  Future<void> refresh({bool silent = false}) async {
-    if (demo || !signedIn || loading) return;
-    final requestedUser = userId;
+  Future<void> refresh({bool silent = false}) {
+    if (busy) return _refreshFuture ?? Future<void>.value();
+    return _refresh(silent: silent);
+  }
+
+  Future<void> _refresh({bool silent = false}) {
+    if (demo || !signedIn || _disposed) return Future<void>.value();
+    if (_refreshFuture != null) return _refreshFuture!;
+    final epoch = _epoch;
+    final user = userId;
+    final future = _fetchSnapshot(epoch, user, silent);
+    _refreshFuture = future;
+    return future.whenComplete(() {
+      if (_current(epoch, user)) {
+        _refreshFuture = null;
+        _scheduleSync();
+      }
+    });
+  }
+
+  Future<void> _fetchSnapshot(int epoch, String user, bool silent) async {
+    final cacheKey = 'layover.summary.$user';
+    final draftKey = 'layover.drafts.$user';
+    final pendingKey = 'layover.pending.$user';
     if (_retry == null) {
-      final pending = _prefs?.getString(_pendingKey);
+      final pending = _prefs?.getString(pendingKey);
       if (pending != null) {
         try {
           _retry = Map<String, dynamic>.from(jsonDecode(pending) as Map);
         } catch (_) {
-          await _prefs?.remove(_pendingKey);
+          await _prefs?.remove(pendingKey);
         }
       }
     }
+    if (!_current(epoch, user)) return;
     if (!silent) loading = true;
     _notify();
     try {
       final data = await client!
           .rpc('companion_snapshot')
           .timeout(const Duration(seconds: 20));
-      if (userId != requestedUser || demo || _disposed) return;
+      if (!_current(epoch, user)) return;
       snapshot = TripSnapshot(Map<String, dynamic>.from(data as Map));
       offline = false;
+      lastSyncedAt = DateTime.now();
+      _syncFailures = 0;
       error = _retry == null ? null : 'An earlier request needs confirmation. Retry it before making another change.';
       selectedTrip = snapshot.trips.any((t) => t.id == selectedTrip)
           ? selectedTrip
@@ -170,23 +273,30 @@ class TripStore extends ChangeNotifier {
       _loadDrafts();
       final ids = snapshot.trips.map((t) => t.id).toSet();
       drafts.removeWhere((d) => !ids.contains(d['trip_id']));
-      await _prefs?.setString(_draftKey, jsonEncode(drafts));
-      await _prefs?.setString(_cacheKey, jsonEncode(snapshot.offlineCopy()));
+      await _prefs?.setString(draftKey, jsonEncode(drafts));
+      if (!_current(epoch, user)) return;
+      await _prefs?.setString(cacheKey, jsonEncode(snapshot.offlineCopy()));
     } catch (e) {
-      if (userId != requestedUser || _disposed) return;
-      if (e is AuthException ||
+      if (!_current(epoch, user)) return;
+      _syncFailures++;
+      final denied =
+          e is AuthException ||
           (e is PostgrestException &&
-              ['42501', 'PGRST301', 'PGRST302'].contains(e.code))) {
-        await _prefs?.remove(_cacheKey);
-        snapshot = TripSnapshot.empty();
+              ['42501', 'PGRST301', 'PGRST302'].contains(e.code));
+      snapshot = TripSnapshot.empty();
+      if (denied) {
+        await _prefs?.remove(cacheKey);
       } else {
-        final cached = _prefs?.getString(_cacheKey);
+        final cached = _prefs?.getString(cacheKey);
         if (cached != null) {
-          snapshot = TripSnapshot(jsonDecode(cached) as Json);
-        } else {
-          snapshot = TripSnapshot.empty();
+          try {
+            snapshot = TripSnapshot(jsonDecode(cached) as Json);
+          } catch (_) {
+            await _prefs?.remove(cacheKey);
+          }
         }
       }
+      if (!_current(epoch, user)) return;
       offline = true;
       selectedTrip = snapshot.trips.any((t) => t.id == selectedTrip)
           ? selectedTrip
@@ -194,13 +304,20 @@ class TripStore extends ChangeNotifier {
       error = friendlyError(e);
       _loadDrafts();
     } finally {
-      loading = false;
-      _notify();
+      if (_current(epoch, user)) {
+        loading = false;
+        _notify();
+      }
     }
   }
 
   Future<Json?> command(String action, Json data, {String? requestId}) async {
-    if (busy) return null;
+    if (busy || _disposed) return null;
+    if (!signedIn) {
+      error = 'Sign in before changing shared trip data.';
+      _notify();
+      return null;
+    }
     if (!demo && _retry != null && requestId != _retry!['id']) {
       error = 'Retry the unresolved request before making another change.';
       _notify();
@@ -211,56 +328,77 @@ class TripStore extends ChangeNotifier {
       _notify();
       return null;
     }
+    final epoch = _epoch;
+    final user = userId;
+    final isDemo = demo;
+    final pendingKey = 'layover.pending.$user';
+    final id = requestId ?? uuid.v4();
+    // Capture nested form data before any await or user/account change.
+    final payload = jsonDecode(jsonEncode(data)) as Json;
     busy = true;
     error = null;
+    _refreshTimer?.cancel();
     _notify();
-    final id = requestId ?? uuid.v4();
     try {
+      // Finish any poll before mutation, then fetch a snapshot after the commit.
+      await _refreshFuture;
+      if (!_current(epoch, user)) return null;
       final Json result;
-      if (demo) {
-        // Copy first so a failed demo operation cannot partially change local data.
+      if (isDemo) {
         final before = encodeSnapshot(snapshot);
         try {
-          result = _demoCommand(action, data);
+          result = _demoCommand(action, payload);
         } catch (_) {
           snapshot = TripSnapshot(jsonDecode(before) as Json);
           rethrow;
         }
         await _prefs?.setString('layover.demo.v2', encodeSnapshot(snapshot));
       } else {
-        await _prefs?.setString(
-          _pendingKey,
-          jsonEncode({'action': action, 'data': data, 'id': id}),
-        );
+        final attempt = {'action': action, 'data': payload, 'id': id};
+        await _prefs?.setString(pendingKey, jsonEncode(attempt));
+        if (!_current(epoch, user)) return null;
         final response = await client!
             .rpc(
               'companion_command',
-              params: {'p_action': action, 'p_data': data, 'p_request_id': id},
+              params: {
+                'p_action': action,
+                'p_data': payload,
+                'p_request_id': id,
+              },
             )
             .timeout(const Duration(seconds: 25));
+        if (!_current(epoch, user)) return null;
         result = Map<String, dynamic>.from(response as Map);
         _retry = null;
-        await _prefs?.remove(_pendingKey);
-        await refresh();
+        await _prefs?.remove(pendingKey);
+        if (!_current(epoch, user)) return null;
+        await _refresh();
       }
+      if (!_current(epoch, user)) return null;
       _retry = null;
-      if (result['trip_id'] != null) selectedTrip = result['trip_id'] as String;
+      if (result['trip_id'] case final String tripId) {
+        if (snapshot.trips.any((t) => t.id == tripId)) selectedTrip = tripId;
+      }
       return result;
     } catch (e) {
+      if (!_current(epoch, user)) return null;
       error = friendlyError(e);
-      if (!demo &&
+      if (!isDemo &&
           e is! PostgrestException &&
           e is! FormatException &&
           e is! AuthException) {
-        _retry = {'action': action, 'data': data, 'id': id};
+        _retry = {'action': action, 'data': payload, 'id': id};
       } else {
         _retry = null;
-        await _prefs?.remove(_pendingKey);
+        await _prefs?.remove(pendingKey);
       }
       return null;
     } finally {
-      busy = false;
-      _notify();
+      if (_current(epoch, user)) {
+        busy = false;
+        _scheduleSync();
+        _notify();
+      }
     }
   }
 
@@ -336,6 +474,7 @@ class TripStore extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _epoch++;
     _auth?.cancel();
     _refreshTimer?.cancel();
     super.dispose();

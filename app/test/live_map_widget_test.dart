@@ -38,7 +38,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Start session'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Map preview needs'), findsOneWidget);
+      expect(find.textContaining('Map not available'), findsOneWidget);
       expect(store.sharing, false);
       await tester.tap(find.text('Share location'));
       await tester.pumpAndSettle();

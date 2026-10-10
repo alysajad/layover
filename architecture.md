@@ -75,7 +75,7 @@ blocked until that person's balance and pending transfers are resolved.
 
 ## Offline and Recovery
 
-The store refreshes on resume, manual refresh, and a 45-second connected poll.
+The store refreshes on resume, manual refresh, and a five-second foreground connected poll.
 User-scoped local preferences retain non-financial itinerary/booking summaries
 and expense drafts. No background financial writes occur offline. A successful
 refresh removes inaccessible trips and their drafts.
@@ -101,9 +101,34 @@ reduce visible duplicates. The app's in-app records remain authoritative.
 Flutter tests cover money parsing, split reconciliation, contribution/expense
 accounting, corrections/refunds, settlement, caching, persistence, and responsive
 navigation. The PostgreSQL integration suite uses PGlite with Supabase auth and
-storage stubs to execute both migrations and test security/business rules.
+storage stubs to execute all three migrations and test security/business rules.
 Browser checks run the compiled web app at phone and desktop widths.
 
 These local checks do not replace a hosted Supabase migration test, SMTP/OTP
 delivery check, Firebase device test, physical Android validation, or user pilot.
 See `app/README.md` for deployment and local-run instructions.
+
+## Live Map P0
+
+`0003_live_map.sql` adds private sessions, account-bound member invitations,
+current consents, latest positions, one regroup destination, and redacted
+lifecycle events. A separate fingerprint receipt table provides idempotency
+without retaining request payloads. Existing financial RPCs remain unchanged.
+
+The Flutter feature lives under `features/live_map`. Riverpod owns its
+`ChangeNotifier` for the route; `LiveMapApi` reuses the Supabase client. The store
+polls every three seconds while visible, backs off after failures, and discards
+late account/session responses. Geolocator supplies fresh foreground fixes.
+Only `map_adapter.dart` imports Mapbox; shared GeoJSON layers support Android and
+web, with optional 3D and a 2D recovery path.
+
+Coordinates stay in memory on the client and in one current server row. Poll
+failures clear visible locations. Backgrounding and route exit cancel GPS and
+attempt server pause; resuming only restores viewing. Publication requires a
+current consent generation and unexpired 30-second lease. Server freshness,
+rate/sequence checks, and session locks prevent old requests from restarting
+sharing. Trip archive/removal triggers invalidate linked sessions without
+changing financial rules.
+
+See [operations and retention](docs/live-map-operations.md). Hosted backup and
+log retention remain a release gate; local deletion tests cannot verify them.

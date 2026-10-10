@@ -11,6 +11,18 @@ String money(int amount) => NumberFormat.currency(
   decimalDigits: 2,
 ).format(amount / 100);
 
+void requireFormTrip(TripStore store, String user, String tripId) {
+  final trip = store.snapshot.trips.where((t) => t.id == tripId).firstOrNull;
+  if (store.userId != user || trip == null) {
+    throw const FormatException(
+      'This trip is no longer available. Close this form and refresh.',
+    );
+  }
+  if (trip.archived) {
+    throw const FormatException('This trip has been archived.');
+  }
+}
+
 Future<Json?> showFields(
   BuildContext context,
   String title,
@@ -133,6 +145,19 @@ class EntryForm extends StatefulWidget {
 }
 
 class _EntryFormState extends State<EntryForm> {
+  late final String tripId;
+  late final String accountId;
+  late final Trip trip;
+  late final List<Member> members;
+  @override
+  void initState() {
+    super.initState();
+    trip = widget.store.trip!;
+    tripId = trip.id;
+    accountId = widget.store.userId;
+    members = widget.store.members.where((m) => m.active).toList();
+  }
+
   final form = GlobalKey<FormState>();
   late final fields = <String, String>{
     'title': 'Title',
@@ -192,8 +217,9 @@ class _EntryFormState extends State<EntryForm> {
         if ((await f.length() ?? 10485761) > 10485760) {
           throw const FormatException('Maximum file size is 10 MB.');
         }
+        requireFormTrip(widget.store, accountId, tripId);
         attachment = await widget.store.upload(
-          widget.store.selectedTrip!,
+          tripId,
           f.name,
           await f.readAsBytes(),
         );
@@ -208,6 +234,7 @@ class _EntryFormState extends State<EntryForm> {
   void submit() {
     if (!form.currentState!.validate()) return;
     try {
+      requireFormTrip(widget.store, accountId, tripId);
       final details = <String, dynamic>{
         ...?widget.entry?.details,
         for (final e in controllers.entries)
@@ -262,7 +289,7 @@ class _EntryFormState extends State<EntryForm> {
       }
       if (attachment != null) details['attachment'] = attachment;
       Navigator.pop(context, {
-        'trip_id': widget.store.selectedTrip,
+        'trip_id': tripId,
         'kind': widget.kind,
         'title': controllers['title']!.text.trim(),
         'details': details,
@@ -326,9 +353,7 @@ class _EntryFormState extends State<EntryForm> {
                   child: DropdownButtonFormField<String>(
                     isExpanded: true,
                     initialValue:
-                        widget.store.members.any(
-                          (m) => m.id == assignee && m.active,
-                        )
+                        members.any((m) => m.id == assignee && m.active)
                         ? assignee
                         : '',
                     decoration: InputDecoration(
@@ -341,9 +366,7 @@ class _EntryFormState extends State<EntryForm> {
                         value: '',
                         child: Text('Unassigned'),
                       ),
-                      for (final m in widget.store.members.where(
-                        (m) => m.active,
-                      ))
+                      for (final m in members.where((m) => m.active))
                         DropdownMenuItem(value: m.id, child: Text(m.name)),
                     ],
                     onChanged: (v) => assignee = v!,
@@ -417,6 +440,21 @@ class MoneyForm extends StatefulWidget {
 }
 
 class _MoneyFormState extends State<MoneyForm> {
+  late final String tripId;
+  late final String accountId;
+  late final Trip trip;
+  late final List<Member> members;
+  late final int? potVersion;
+  @override
+  void initState() {
+    super.initState();
+    trip = widget.store.trip!;
+    tripId = trip.id;
+    accountId = widget.store.userId;
+    members = widget.store.members.where((m) => m.active).toList();
+    potVersion = widget.store.snapshot.pot(tripId)?['version'] as int?;
+  }
+
   final form = GlobalKey<FormState>();
   late final title = TextEditingController(
     text: widget.initial?['title'] as String?,
@@ -437,12 +475,23 @@ class _MoneyFormState extends State<MoneyForm> {
     text: widget.initial?['cover'] as String? ?? '0',
   );
   late final weights = {
-    for (final m in widget.store.members.where((m) => m.active))
-      m.id: TextEditingController(text: '1'),
+    for (final m in members.where((m) => m.active))
+      m.id: TextEditingController(
+        text: widget.initial?['shares'] is Map
+            ? (((widget.initial!['shares'] as Map)[m.id] as num? ?? 0) / 100)
+                  .toStringAsFixed(2)
+            : '1',
+      ),
   };
-  late final selected = weights.keys.toSet();
+  late final selected = widget.initial?['shares'] is Map
+      ? weights.keys
+            .where((id) => (widget.initial!['shares'] as Map).containsKey(id))
+            .toSet()
+      : weights.keys.toSet();
   late String payer = widget.store.userId;
-  SplitMode mode = SplitMode.equal;
+  late SplitMode mode = widget.initial?['shares'] is Map
+      ? SplitMode.exact
+      : SplitMode.equal;
   String category = 'Stay';
   String? error;
   String? receipt;
@@ -468,7 +517,7 @@ class _MoneyFormState extends State<MoneyForm> {
           ? 1
           : mode == SplitMode.weighted
           ? int.parse(weights[id]!.text)
-          : weights[id]!.text.trim() == '0'
+          : RegExp(r'^0(?:\.0{1,2})?$').hasMatch(weights[id]!.text.trim())
           ? 0
           : parseMoney(weights[id]!.text),
   };
@@ -478,7 +527,7 @@ class _MoneyFormState extends State<MoneyForm> {
         parseMoney(amount.text),
         readWeights(),
         mode: mode,
-        remainderUser: widget.pot ? widget.store.trip!.organizer : null,
+        remainderUser: widget.pot ? trip.organizer : null,
       );
     } catch (_) {
       return null;
@@ -488,13 +537,14 @@ class _MoneyFormState extends State<MoneyForm> {
   void submit() {
     if (!form.currentState!.validate()) return;
     try {
+      requireFormTrip(widget.store, accountId, tripId);
       final total = parseMoney(amount.text);
       final inputs = readWeights();
       splitAmount(
         total,
         inputs,
         mode: mode,
-        remainderUser: widget.pot ? widget.store.trip!.organizer : null,
+        remainderUser: widget.pot ? trip.organizer : null,
       );
       DateTime? due;
       var covered = 0;
@@ -511,7 +561,7 @@ class _MoneyFormState extends State<MoneyForm> {
         }
       }
       Navigator.pop(context, {
-        'trip_id': widget.store.selectedTrip,
+        'trip_id': tripId,
         'title': title.text.trim(),
         'amount_minor': total,
         'split_mode': mode.name,
@@ -520,9 +570,7 @@ class _MoneyFormState extends State<MoneyForm> {
           'deadline_at': due!.toUtc().toIso8601String(),
           'terms': terms.text.trim(),
           'organizer_cover_minor': covered,
-          'version': widget.store.snapshot.pot(
-            widget.store.selectedTrip!,
-          )?['version'],
+          'version': potVersion,
         },
         if (!widget.pot) ...{
           'payer_id': payer,
@@ -551,8 +599,9 @@ class _MoneyFormState extends State<MoneyForm> {
         if ((await f.length() ?? 10485761) > 10485760) {
           throw const FormatException('Maximum file size is 10 MB.');
         }
+        requireFormTrip(widget.store, accountId, tripId);
         receipt = await widget.store.upload(
-          widget.store.selectedTrip!,
+          tripId,
           f.name,
           await f.readAsBytes(),
         );
@@ -610,9 +659,7 @@ class _MoneyFormState extends State<MoneyForm> {
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Paid by'),
                     items: [
-                      for (final m in widget.store.members.where(
-                        (m) => m.active,
-                      ))
+                      for (final m in members.where((m) => m.active))
                         DropdownMenuItem(value: m.id, child: Text(m.name)),
                     ],
                     onChanged: (v) => payer = v!,
@@ -655,7 +702,7 @@ class _MoneyFormState extends State<MoneyForm> {
                   onChanged: (v) => setState(() => mode = v!),
                 ),
                 const SizedBox(height: 12),
-                for (final m in widget.store.members.where((m) => m.active))
+                for (final m in members.where((m) => m.active))
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Column(
@@ -817,6 +864,19 @@ class TransferForm extends StatefulWidget {
 }
 
 class _TransferFormState extends State<TransferForm> {
+  late final String tripId;
+  late final String accountId;
+  late final Trip trip;
+  late final List<Member> members;
+  @override
+  void initState() {
+    super.initState();
+    trip = widget.store.trip!;
+    tripId = trip.id;
+    accountId = widget.store.userId;
+    members = widget.store.members.where((m) => m.active).toList();
+  }
+
   late final amount = TextEditingController(
     text: widget.initial?['amount_minor'] != null
         ? ((widget.initial!['amount_minor'] as num) / 100).toStringAsFixed(2)
@@ -829,11 +889,8 @@ class _TransferFormState extends State<TransferForm> {
       widget.correction?.recipient ??
       widget.initial?['recipient_id'] as String? ??
       (widget.pot != null
-          ? widget.store.trip!.organizer
-          : widget.store.members
-                .where((m) => m.id != widget.store.userId)
-                .firstOrNull
-                ?.id);
+          ? trip.organizer
+          : members.where((m) => m.id != widget.store.userId).firstOrNull?.id);
   String? error;
   @override
   void dispose() {
@@ -860,7 +917,7 @@ class _TransferFormState extends State<TransferForm> {
               isExpanded: true,
               decoration: const InputDecoration(labelText: 'Recipient'),
               items: [
-                for (final m in widget.store.members.where(
+                for (final m in members.where(
                   (m) => m.id != widget.store.userId,
                 ))
                   DropdownMenuItem(value: m.id, child: Text(m.name)),
@@ -898,11 +955,17 @@ class _TransferFormState extends State<TransferForm> {
       FilledButton(
         onPressed: () {
           try {
+            requireFormTrip(widget.store, accountId, tripId);
+            if (!widget.store.snapshot
+                .members(tripId)
+                .any((m) => m.id == recipient && m.active)) {
+              throw const FormatException('Recipient is no longer a member.');
+            }
             if (recipient == null || recipient == widget.store.userId) {
               throw const FormatException('Choose another recipient.');
             }
             Navigator.pop(context, {
-              'trip_id': widget.store.selectedTrip,
+              'trip_id': tripId,
               'recipient_id': recipient,
               'amount_minor': parseMoney(amount.text),
               'note': note.text.trim(),

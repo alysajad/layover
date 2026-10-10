@@ -5,6 +5,38 @@ import 'package:layover/features/companion/data/trip_store.dart';
 import 'package:layover/features/companion/presentation/companion_screen.dart';
 
 void main() {
+  testWidgets('compact layout supports enlarged text and trip actions', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.textScaleFactorTestValue = 1.3;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final store = TripStore(persistence: false);
+    addTearDown(store.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLayoverTheme(),
+        home: CompanionScreen(store: store),
+      ),
+    );
+    await tester.pumpAndSettle();
+    for (final label in ['Plan', 'Money', 'Bookings', 'Group', 'Overview']) {
+      await tester.tap(find.text(label).last);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+    await tester.tap(find.byTooltip('Trip actions'));
+    await tester.pumpAndSettle();
+    expect(find.text('Create trip'), findsOneWidget);
+    expect(find.text('Edit trip'), findsOneWidget);
+    await tester.tap(find.text('Join trip'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextFormField, 'Invite code'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
   for (final width in [360.0, 1200.0]) {
     testWidgets('companion navigation and poll form at width $width', (
       tester,
@@ -24,6 +56,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Layover'), findsOneWidget);
       expect(find.text('Goa weekend'), findsWidgets);
+      expect(find.text('Live Map · Find your group'), findsOneWidget);
       for (final label in ['Plan', 'Money', 'Bookings', 'Group', 'Overview']) {
         await tester.tap(find.text(label).last);
         await tester.pumpAndSettle();
@@ -87,6 +120,12 @@ void main() {
         100001,
       );
       expect(tester.takeException(), isNull);
+      await tester.tap(find.text('Overview').last);
+      store.snapshot.data['trips'] = [];
+      store.selectedTrip = null;
+      await tester.pumpAndSettle();
+      expect(find.text('Your next trip starts here'), findsOneWidget);
+      expect(find.text('Live Map · Find your group'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     });
   }

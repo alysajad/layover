@@ -12,3 +12,7 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Gradle/Kotlin generated build reports and compiler sessions.
+/build/
+/.kotlin/

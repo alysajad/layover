@@ -1,29 +1,11 @@
 // Run with Node and @electric-sql/pglite installed. No hosted database is touched.
-const { PGlite } = require('@electric-sql/pglite');
-const { pgcrypto } = require('@electric-sql/pglite/contrib/pgcrypto');
-const { readFileSync } = require('node:fs');
-const { join } = require('node:path');
 const { randomUUID } = require('node:crypto');
 const assert = require('node:assert/strict');
 
+const {createDatabase}=require('./live_map_fixture.cjs');
+
 (async () => {
-  const db = new PGlite({ extensions: { pgcrypto } });
-  await db.exec(`
-    create role anon; create role authenticated; create role service_role bypassrls;
-    create schema auth; create schema storage;
-    create table auth.users(id uuid primary key,email text,raw_user_meta_data jsonb default '{}');
-    create function auth.uid() returns uuid language sql stable as
-      $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
-    create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
-    create table storage.objects(id uuid primary key default gen_random_uuid(),bucket_id text,name text);
-    alter table storage.objects enable row level security;
-    create function storage.foldername(text) returns text[] language sql as $$ select string_to_array($1,'/') $$;
-    grant usage on schema public,auth,storage to authenticated,anon,service_role;
-  `);
-  for (const file of ['0001_init.sql','0002_companion.sql','0003_live_map.sql']) {
-    try { await db.exec(readFileSync(join(__dirname,'../migrations',file),'utf8')); }
-    catch (error) { console.error(`Migration failed: ${file}`, error.message, error.position); throw error; }
-  }
+  const db=await createDatabase();
   const [a,b,c,x]=Array.from({length:4},randomUUID);
   for (const id of [a,b,c,x]) await db.query('insert into auth.users(id,email) values($1,$2)',[id,`${id}@example.test`]);
   const asUser=async id=>{await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[id]);await db.exec('set role authenticated');};
@@ -51,21 +33,27 @@ const assert = require('node:assert/strict');
   await assert.rejects(()=>command('create',{name:'Too long',duration_hours:9}),/Duration/);
   await assert.rejects(()=>db.query('select * from live_locations'),/permission denied/);
   await assert.rejects(()=>db.query('select live_map_cleanup()'),/permission denied/);
+  await assert.rejects(()=>command('destination',{session_id:sid,name:'x'.repeat(5000)}),/Invalid payload/);
   await command('invite',{session_id:sid,target_id:b});
   await command('invite',{session_id:sid,target_id:c});
+  await root(`update live_session_members set invitation_expires_at=now()-interval '1 second' where session_id='${sid}' and user_id='${c}'`);
+  await asUser(c);await assert.rejects(()=>command('join',{session_id:sid}),/Invitation/);
+  await asUser(a);await command('invite',{session_id:sid,target_id:c});
+  await asUser(c);assert.equal((await sessions()).sessions.length,1);
+  await asUser(a);
   await assert.rejects(()=>command('invite',{session_id:sid,target_id:x}),/eligible/);
   await asUser(x);await assert.rejects(()=>snapshot(sid),/access denied/);assert.equal((await sessions()).sessions.length,0);
   await asUser(b);assert.equal((await sessions()).sessions.length,1);
   await assert.rejects(()=>snapshot(sid),/access denied/);
   await command('join',{session_id:sid});
-  await assert.rejects(()=>command('start',{session_id:sid}),/Only organizer/);
+  for(const action of ['start','invite','remove','revoke','end','cancel']) await assert.rejects(()=>command(action,{session_id:sid,target_id:a}),/Only organizer/);
   await assert.rejects(()=>command('consent',{session_id:sid,consent_version:'live-map-v1'}),/Active session/);
   await asUser(a);await command('start',{session_id:sid});
   await command('revoke',{session_id:sid,target_id:c});
   await asUser(c);await assert.rejects(()=>command('join',{session_id:sid}),/Invitation/);
   await asUser(b);await assert.rejects(()=>publish(),/explicit resume/);
   ({generation}=await command('consent',{session_id:sid,consent_version:'live-map-v1'}));
-  for(const overrides of [{latitude:91},{longitude:-181},{latitude:'NaN'},{accuracy:-1},{accuracy:5001},{heading:360},{speed:101},{time:new Date(Date.now()-31000).toISOString()},{time:new Date(Date.now()+11000).toISOString()}])
+  for(const overrides of [{latitude:91},{longitude:-181},{latitude:'NaN'},{longitude:'Infinity'},{accuracy:'NaN'},{latitude:null},{accuracy:-1},{accuracy:5001},{heading:360},{speed:101},{time:new Date(Date.now()-31000).toISOString()},{time:new Date(Date.now()+11000).toISOString()}])
     await assert.rejects(()=>publish(overrides),/Invalid location|fresh device/);
   await assert.rejects(()=>command('consent',{session_id:sid,consent_version:'live-map-v1',user_id:a}),/identity/);
   await publish();
@@ -79,9 +67,17 @@ const assert = require('node:assert/strict');
   await asUser(b);assert.equal((await snapshot(sid)).locations[0].stale,true);
   await assert.rejects(()=>publish({latitude:50}),/Implausible/);
   await publish({accuracy:150});assert.equal((await snapshot(sid)).locations[0].poor_accuracy,true);
+  await root(`update live_locations set received_at=now()-interval '6 seconds',client_timestamp=now()-interval '6 seconds' where session_id='${sid}';update location_sharing_consents set last_received_at=now()-interval '6 seconds' where session_id='${sid}'`);
+  await asUser(b);
+  const simultaneous=await Promise.allSettled([publish(),publish()]);
+  assert.equal(simultaneous.filter(r=>r.status==='fulfilled').length,1);
+  assert.equal((await snapshot(sid)).locations.length,1);
+  await assert.rejects(()=>command('destination',{session_id:sid,name:'Bad point',latitude:'NaN',longitude:0}),/check constraint/);
   // Stop and publication share a session lock: queued old-generation writes fail.
   const old=generation;
-  await command('stop',{session_id:sid});await assert.rejects(()=>publish(),/explicit resume/);
+  const withdrawal=await Promise.allSettled([command('stop',{session_id:sid}),publish()]);
+  assert.equal(withdrawal[0].status,'fulfilled');
+  await assert.rejects(()=>publish(),/explicit resume/);
   assert.equal((await snapshot(sid)).locations.length,0);
   ({generation}=await command('consent',{session_id:sid,consent_version:'live-map-v1'}));
   await assert.rejects(()=>publish({generation:old}),/explicit resume/);
@@ -94,6 +90,7 @@ const assert = require('node:assert/strict');
   await root(`select live_map_cleanup()`);await asUser(b);assert.equal((await snapshot(sid)).locations.length,1);
   await asUser(a);await companion('remove_member',{trip_id:trip,user_id:b});
   await asUser(b);await assert.rejects(()=>snapshot(sid),/access denied/);await assert.rejects(()=>publish(),/access denied/);
+  await assert.rejects(()=>command('destination',{session_id:sid,name:'Former member',latitude:0,longitude:0}),/access denied/);
   await asUser(a);assert.equal((await snapshot(sid)).locations.length,0);
   await assert.rejects(()=>command('leave',{session_id:sid}),/Organizer/);
   await companion('archive_trip',{trip_id:trip,archived:true});await assert.rejects(()=>snapshot(sid),/access denied/);
@@ -120,8 +117,10 @@ const assert = require('node:assert/strict');
   await asUser(a);sid=(await command('create',{name:'Expiry'})).session_id;
   await root(`update live_sessions set created_at=now()-interval '3 hours',expires_at=now()-interval '1 second' where id='${sid}'`);
   await asUser(a);await assert.rejects(()=>snapshot(sid),/expired/);await assert.rejects(()=>command('start',{session_id:sid}),/expired/);
-  await root(`select live_map_cleanup();update live_sessions set created_at=now()-interval '31 days 1 hour',expires_at=now()-interval '31 days' where id='${sid}';select live_map_cleanup()`);
+  await root(`select live_map_cleanup();update live_session_events set created_at=now()-interval '31 days';update live_map_receipts set created_at=now()-interval '31 days';update live_sessions set created_at=now()-interval '31 days 1 hour',expires_at=now()-interval '31 days' where id='${sid}';select live_map_cleanup()`);
   assert.equal((await db.query('select count(*)::int n from live_sessions where id=$1',[sid])).rows[0].n,0);
+  assert.equal((await db.query('select count(*)::int n from live_session_events')).rows[0].n,0);
+  assert.equal((await db.query('select count(*)::int n from live_map_receipts')).rows[0].n,0);
   console.log('PASS: Live Map RPC/RLS, account invitations, consent generations, publication validation, stale/lease expiry, withdrawal, trip invalidation, standalone eligibility, end, cleanup, redacted receipts');
   await db.close();
 })().catch(error=>{console.error(error.message,error.detail??'',error.where??'');process.exit(1);});

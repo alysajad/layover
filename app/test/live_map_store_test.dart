@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:layover/features/companion/data/trip_store.dart';
 import 'package:layover/features/live_map/data/device_location.dart';
 import 'package:layover/features/live_map/data/live_map_api.dart';
@@ -20,6 +21,18 @@ class Account extends TripStore {
   }
 }
 
+class PermissionPlatform extends GeolocatorPlatform {
+  PermissionPlatform(this.permission, {this.enabled = true});
+  final LocationPermission permission;
+  final bool enabled;
+  @override
+  Future<bool> isLocationServiceEnabled() async => enabled;
+  @override
+  Future<LocationPermission> checkPermission() async => permission;
+  @override
+  Future<LocationPermission> requestPermission() async => permission;
+}
+
 class FakeDevice extends DeviceLocation {
   final fixesController = StreamController<Json>.broadcast();
   bool denied = false;
@@ -27,8 +40,9 @@ class FakeDevice extends DeviceLocation {
   @override
   Future<void> requestPermission() async {
     permissions++;
-    if (denied)
+    if (denied) {
       throw const FormatException('Permission denied; viewing is available.');
+    }
   }
 
   @override
@@ -131,6 +145,48 @@ void main() {
     account.dispose();
     await device.fixesController.close();
   });
+  for (final permission in [
+    LocationPermission.denied,
+    LocationPermission.deniedForever,
+    LocationPermission.unableToDetermine,
+  ]) {
+    test('device adapter explains $permission without acquiring GPS', () async {
+      final original = GeolocatorPlatform.instance;
+      GeolocatorPlatform.instance = PermissionPlatform(permission);
+      try {
+        await expectLater(
+          DeviceLocation().requestPermission(),
+          throwsA(isA<FormatException>()),
+        );
+      } finally {
+        GeolocatorPlatform.instance = original;
+      }
+    });
+  }
+  test(
+    'disabled device services explain that viewing remains available',
+    () async {
+      final original = GeolocatorPlatform.instance;
+      GeolocatorPlatform.instance = PermissionPlatform(
+        LocationPermission.whileInUse,
+        enabled: false,
+      );
+      try {
+        await expectLater(
+          DeviceLocation().requestPermission(),
+          throwsA(
+            isA<FormatException>().having(
+              (e) => e.message,
+              'message',
+              contains('services are off'),
+            ),
+          ),
+        );
+      } finally {
+        GeolocatorPlatform.instance = original;
+      }
+    },
+  );
   test('viewing never asks permission; consent starts and stop cancels acquisition', () async {
     await store.enter('s');
     expect(device.permissions, 0);
@@ -256,6 +312,38 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(store.sharing, false);
   });
+  test('late pre-stop snapshot cannot restore a withdrawn position', () async {
+    await store.enter('s');
+    await store.share();
+    api.pendingSnapshot = Completer<Json>();
+    final pending = store.refresh();
+    final stale = api.data();
+    stale['locations'] = [
+      {
+        'user_id': 'alice',
+        'latitude': 1,
+        'longitude': 2,
+        'accuracy_m': 10,
+        'received_at': DateTime.now().toIso8601String(),
+      },
+    ];
+    await store.stop();
+    api.pendingSnapshot!.complete(stale);
+    await pending;
+    expect(store.visibleLocations, isEmpty);
+    expect(store.sharing, false);
+  });
+  test(
+    'switching sessions cancels acquisition and pauses the old session',
+    () async {
+      await store.enter('s');
+      await store.share();
+      await store.enter('another');
+      expect(store.sharing, false);
+      expect(device.fixesController.hasListener, false);
+      expect(api.actions, contains('pause'));
+    },
+  );
   test(
     'server freshness separates stale from stopped and hides expired fixes',
     () async {

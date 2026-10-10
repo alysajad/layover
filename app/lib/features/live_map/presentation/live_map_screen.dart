@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../app/app.dart';
+import '../../../app/theme.dart';
+import '../../../app/travel_sketch.dart';
 import '../../companion/data/trip_store.dart';
 import '../../companion/presentation/forms.dart';
 import '../data/live_map_store.dart';
@@ -149,11 +151,12 @@ class _LiveMapScreenState extends State<LiveMapScreen>
         ],
       ),
     );
-    if (id != null)
+    if (id != null) {
       await store.command('invite', {
         'session_id': store.sessionId,
         'target_id': id,
       });
+    }
   }
 
   Future<void> _finish(String action) async {
@@ -173,19 +176,21 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   }
 
   Future<void> _link({bool share = false}) async {
-    final uri = Uri.base
-        .replace(
-          queryParameters: {'live_session': store.sessionId!},
-          fragment: '',
-        )
-        .toString();
+    final invitation = ['http', 'https'].contains(Uri.base.scheme)
+        ? Uri.base
+              .replace(
+                queryParameters: {'live_session': store.sessionId!},
+                fragment: '',
+              )
+              .toString()
+        : 'Open Layover → Live Map and choose “${store.snapshot?.session['name'] ?? 'your invitation'}”. Session reference: ${store.sessionId}';
     if (share) {
       final box = context.findRenderObject() as RenderBox?;
       try {
         await SharePlus.instance.share(
           ShareParams(
             text:
-                'Open this private Live Map. An account invitation is required.\n$uri',
+                'Open this private Live Map. An account invitation is required.\n$invitation',
             sharePositionOrigin: box == null
                 ? null
                 : box.localToGlobal(Offset.zero) & box.size,
@@ -194,13 +199,16 @@ class _LiveMapScreenState extends State<LiveMapScreen>
         return;
       } catch (_) {}
     }
-    await Clipboard.setData(ClipboardData(text: uri));
-    if (mounted)
+    await Clipboard.setData(ClipboardData(text: invitation));
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Session link copied. Only invited accounts can join.'),
+          content: Text(
+            'Session invitation copied. Only invited accounts can join.',
+          ),
         ),
       );
+    }
   }
 
   @override
@@ -242,11 +250,11 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                   ),
                   const PopupMenuItem(
                     value: 'copy',
-                    child: Text('Copy session link'),
+                    child: Text('Copy session invitation'),
                   ),
                   const PopupMenuItem(
                     value: 'share',
-                    child: Text('Share session link'),
+                    child: Text('Share session invitation'),
                   ),
                   if (snapshot != null)
                     PopupMenuItem(
@@ -408,7 +416,7 @@ class _LiveMapScreenState extends State<LiveMapScreen>
             ? null
             : SafeArea(
                 child: Material(
-                  color: store.sharing ? const Color(0xFFD5EBDD) : Colors.white,
+                  color: store.sharing ? LayoverColors.wash : Colors.white,
                   child: Padding(
                     padding: const EdgeInsets.all(12),
                     child: Wrap(
@@ -452,15 +460,12 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   Widget _sessionList() => ListView(
     padding: const EdgeInsets.all(16),
     children: [
-      Text(
-        'Find your group',
-        style: Theme.of(context).textTheme.headlineMedium,
+      const PageIntro(
+        title: 'Find your group',
+        subtitle: 'Wander your own way. Meet back here.\nShare your location only when you choose.',
       ),
-      const SizedBox(height: 8),
-      const Text(
-        'Private sessions with people from your trips. View first; share only when you choose.',
-      ),
-      const SizedBox(height: 16),
+      const TravelSketch(height: 165),
+      const SizedBox(height: 24),
       FilledButton.icon(
         onPressed: store.busy || !store.validAccount ? null : _create,
         icon: const Icon(Icons.add),

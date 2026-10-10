@@ -3,6 +3,18 @@
 Flutter group-trip companion, backed by Supabase. Payments happen outside the
 app and are acknowledged manually by their recipient.
 
+## Interface
+
+The interface uses an off-white and ink palette, outlined rounded cards, pill
+controls, and original travel line art. Lato fonts and the vector illustration
+are bundled locally; no image or font requests are needed for the app shell.
+The font license is included in `assets/fonts/LICENSE.txt`.
+
+Overview, Plan, Money, Bookings, Group, Live Map, Trip Explorer, and sign-in
+share the same theme. Use the three-dot **Trip actions** menu beside the trip
+selector to create, edit, or join a trip. Phone navigation stays at the bottom;
+wide screens use a navigation rail.
+
 ## Run the Demo
 
 ```sh
@@ -29,10 +41,10 @@ to localhost and serves the current release build; rebuild after code changes.
 ## Connect Supabase
 
 1. Create a development Supabase project. Apply
-   `supabase/migrations/0001_init.sql`, then `0002_companion.sql` in that order.
+   `supabase/migrations/0001_init.sql`, then `0002_companion.sql`, then `0003_live_map.sql` in that order.
    These migrations create a private `trip-files` storage bucket as well.
-2. Enable email authentication. Configure the sign-in email template to include
-   `{{ .Token }}` so users can enter the OTP in the app; verify SMTP delivery.
+2. Enable Google authentication using [the Google sign-in setup](../docs/google-sign-in-setup.md).
+   The app uses browser OAuth with PKCE; email delivery and SMTP are not required.
 3. Populate the existing `env.json` format with `SUPABASE_URL` and
    `SUPABASE_PUBLISHABLE_KEY`. Never put a service-role key in Flutter config.
 4. Run `flutter run --dart-define-from-file=env.json`.
@@ -85,7 +97,7 @@ flutter build web --release
 flutter build apk --debug
 ```
 
-Database checks run both migrations against isolated PostgreSQL (PGlite), with
+Database checks run all three migrations against isolated PostgreSQL (PGlite), with
 test auth/storage schemas. They never connect to a hosted database:
 
 ```sh
@@ -111,3 +123,20 @@ financial history. Assign a support owner to these requests.
 
 Observe five groups first, then expand to twenty. Local tests and demo mode do
 not substitute for deployment and user checks.
+
+## Live Map
+
+Overview and the no-trip home include **Live Map · Find your group**. Create a
+private session, invite existing trip contacts, and start it. Each person joins
+and opts into foreground sharing for that session. The demo uses synthetic
+positions in memory; it never requests GPS or saves Live Map data.
+
+Add `MAPBOX_PUBLIC_TOKEN` to your build config for Android/web maps. Without a
+token, session controls and the member list still work. Enable Supabase Cron
+and verify the minute cleanup job, hosted retention, and physical-device behavior
+before release. See [Live Map operations](../docs/live-map-operations.md) for RPCs,
+token restrictions, billing, cleanup, privacy, and the two-client simulation.
+
+The feature uses `mapbox_maps_flutter` 3.0.0 and `geolocator` 14.1.1. The unused
+`connectivity_plus` dependency was removed because its Linux DBus requirement
+conflicted with geolocator; no existing app code imported it.

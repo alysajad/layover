@@ -188,11 +188,12 @@ begin
       elsif p_action='invite' then
         target:=(p_data->>'target_id')::uuid;
         if target=uid or not live_map_eligible(s.linked_trip_id,uid,target) then raise exception 'Choose an eligible trip contact'; end if;
-        if (select count(*) from live_session_members where session_id=sid and membership_status in ('joined','invited'))>=50 then raise exception 'Session is full'; end if;
+        if (select count(*) from live_session_members where session_id=sid and (membership_status='joined' or (membership_status='invited' and invitation_expires_at>now())))>=50 then raise exception 'Session is full'; end if;
         insert into live_session_members(session_id,user_id,role,membership_status,invitation_expires_at)
           values(sid,target,'member','invited',least(s.expires_at,now()+interval '2 hours'))
           on conflict(session_id,user_id) do update set membership_status='invited',invitation_expires_at=excluded.invitation_expires_at,removed_at=null
-            where live_session_members.membership_status in ('left','removed');
+            where live_session_members.membership_status in ('left','removed')
+              or (live_session_members.membership_status='invited' and live_session_members.invitation_expires_at<=now());
       elsif p_action in ('revoke','remove','leave') then
         target:=case when p_action='leave' then uid else (p_data->>'target_id')::uuid end;
         if target=s.created_by then raise exception 'Organizer must end the session'; end if;
@@ -313,3 +314,10 @@ grant execute on function public.live_map_sessions(),public.live_map_snapshot(uu
   public.live_map_publish_location(uuid,bigint,bigint,double precision,double precision,double precision,timestamptz,double precision,double precision) to authenticated;
 grant execute on function public.live_map_cleanup() to service_role;
 -- Deployment must schedule live_map_cleanup() every minute (see operations guide).
+-- Supabase projects with Cron already enabled get the retention job on migration.
+-- Local PostgreSQL/PGlite stays extension-independent. Enable Cron before rollout.
+do $$ begin
+  if exists(select 1 from pg_extension where extname='pg_cron') then
+    execute $job$select cron.schedule('live-map-cleanup','* * * * *','select public.live_map_cleanup()')$job$;
+  end if;
+end $$;

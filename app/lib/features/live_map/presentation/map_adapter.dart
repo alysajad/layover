@@ -271,7 +271,7 @@ class _GroupMapState extends State<GroupMap> {
                 Text(
                   _failed
                       ? 'Map unavailable. Session controls and the member list still work.'
-                      : 'Map preview needs a Mapbox public token. Session controls and the member list are available.',
+                      : 'Map not available in this build. Session controls and the member list still work.',
                   textAlign: TextAlign.center,
                 ),
                 if (_failed)
@@ -300,11 +300,12 @@ class _GroupMapState extends State<GroupMap> {
               _map = map;
               map.addInteraction(
                 TapInteraction.onMap((event) {
-                  if (mounted)
+                  if (mounted) {
                     widget.onPoint(
                       event.point.coordinates.lat.toDouble(),
                       event.point.coordinates.lng.toDouble(),
                     );
+                  }
                 }),
               );
             },

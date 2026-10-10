@@ -1,3 +1,17 @@
+# Implementation status (11 October 2026)
+
+The P0 integration is implemented in migration 0003 and `app/lib/features/live_map`.
+The original plan below remains as the design record. Current setup, constraints,
+verification commands, and outstanding deployment gates are documented in
+[Live Map operations](docs/live-map-operations.md).
+
+Implementation adjustments: Mapbox 3.0.0 uses GeoJSON sources/layers for shared
+Android/web rendering because point annotations lack a web implementation.
+The unused connectivity package was removed to resolve its Linux DBus conflict
+with geolocator. A scoped Android Gradle workaround applies Kotlin to Mapbox in
+Flutter’s built-in-Kotlin-disabled mode. Consents also retain the last publication time, so changing
+consent cannot bypass the five-second publication limit.
+
 # Live Group Map --- Implementation Plan
 
 **Project:** Existing Flutter group-travel app\
