@@ -8,6 +8,7 @@ import '../domain/models.dart';
 class LiveMapApi {
   LiveMapApi(this.client);
   final SupabaseClient? client;
+  bool get simulated => false;
   Future<Json> call(String name, [Json params = const {}]) async =>
       Map<String, dynamic>.from(
         await client!
@@ -44,6 +45,8 @@ class LiveMapApi {
 class DemoLiveMapApi extends LiveMapApi {
   DemoLiveMapApi(this.trip) : super(null);
   final TripStore trip;
+  @override
+  bool get simulated => true;
   final Map<String, Json> _sessions = {};
   final Map<String, List<Json>> _members = {};
   final Map<String, Json> _destinations = {};

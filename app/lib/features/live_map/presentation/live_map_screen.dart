@@ -11,6 +11,7 @@ import '../../../app/travel_sketch.dart';
 import '../../companion/data/trip_store.dart';
 import '../../companion/presentation/forms.dart';
 import '../data/live_map_store.dart';
+import '../data/campus_simulation.dart';
 import '../domain/models.dart';
 import 'live_map_forms.dart';
 import 'map_adapter.dart';
@@ -28,6 +29,29 @@ class LiveMapRoute extends ConsumerWidget {
   );
 }
 
+/// Owns a memory-only test session while retaining the signed-in admin identity.
+class CampusTestRoute extends StatefulWidget {
+  const CampusTestRoute({super.key, required this.trip});
+  final TripStore trip;
+  @override
+  State<CampusTestRoute> createState() => _CampusTestRouteState();
+}
+
+class _CampusTestRouteState extends State<CampusTestRoute> {
+  late final store = LiveMapStore(
+    trip: widget.trip,
+    api: CampusSimulation(adminId: widget.trip.userId),
+  );
+  @override
+  Widget build(BuildContext context) =>
+      LiveMapScreen(store: store, initialSession: CampusSimulation.sessionId);
+  @override
+  void dispose() {
+    store.dispose();
+    super.dispose();
+  }
+}
+
 class LiveMapScreen extends StatefulWidget {
   const LiveMapScreen({super.key, required this.store, this.initialSession});
   final LiveMapStore store;
@@ -40,6 +64,136 @@ class _LiveMapScreenState extends State<LiveMapScreen>
     with WidgetsBindingObserver {
   LiveMapStore get store => widget.store;
   String? selectedMember;
+  CampusSimulation? get simulation =>
+      store.api is CampusSimulation ? store.api as CampusSimulation : null;
+  Timer? _simulationTimer;
+  final _tickClock = Stopwatch();
+
+  void _startSimulation() {
+    if (simulation == null) return;
+    _simulationTimer?.cancel();
+    _tickClock
+      ..reset()
+      ..start();
+    _simulationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!store.validAccount || !store.viewing || !store.active) return;
+      final elapsed = _tickClock.elapsed;
+      _tickClock.reset();
+      simulation!.tick(elapsed);
+      unawaited(store.refresh());
+    });
+  }
+
+  Future<void> _resetSimulation() async {
+    await store.stop();
+    simulation!.reset();
+    selectedMember = null;
+    await store.enter(CampusSimulation.sessionId);
+    _startSimulation();
+  }
+
+  Future<void> _testControls() => showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (context) => SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(22),
+        child: ListenableBuilder(
+          listenable: store,
+          builder: (context, _) {
+            final sim = simulation!;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Three phones. One screen.',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'You stay admin. These runners are simulated; your account and real trips stay unchanged.',
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final speed in [1.0, 5.0, 10.0])
+                      ChoiceChip(
+                        label: Text('${speed.toInt()}× speed'),
+                        selected: sim.speed == speed,
+                        onSelected: (_) {
+                          sim.speed = speed;
+                          unawaited(store.refresh());
+                        },
+                      ),
+                  ],
+                ),
+                for (final runner in sim.runners.values)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          runner['display_name'] as String,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 6),
+                        if (runner['membership_status'] == 'removed')
+                          const Text(
+                            'Removed · reset the run to restore this phone',
+                          )
+                        else
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children: [
+                              for (final mode in [
+                                'running',
+                                'paused',
+                                'offline',
+                              ])
+                                ChoiceChip(
+                                  label: Text(mode),
+                                  selected: runner['mode'] == mode,
+                                  onSelected: (_) {
+                                    sim.setMode(
+                                      runner['user_id'] as String,
+                                      mode,
+                                    );
+                                    unawaited(store.refresh());
+                                  },
+                                ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
+                const Text(
+                  'Offline keeps the last fix: stale after 15 seconds, hidden after 30. Paused runners stay connected.',
+                ),
+                const SizedBox(height: 18),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    Navigator.pop(context);
+                    await _resetSimulation();
+                  },
+                  icon: const Icon(Icons.restart_alt),
+                  label: const Text('Reset run'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Back to map'),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    ),
+  );
   @override
   void initState() {
     super.initState();
@@ -53,14 +207,17 @@ class _LiveMapScreenState extends State<LiveMapScreen>
     if (!mounted || id == null) return;
     final invitation = store.sessions.where((s) => s['id'] == id).firstOrNull;
     if (invitation?['membership_status'] == 'joined') await store.enter(id);
+    _startSimulation();
     // An invitation remains in the list until the account explicitly joins it.
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(store.resume());
+      unawaited(store.resume().then((_) => _startSimulation()));
     } else {
+      _simulationTimer?.cancel();
+      _tickClock.stop();
       unawaited(store.suspend());
     }
   }
@@ -68,6 +225,8 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _simulationTimer?.cancel();
+    _tickClock.stop();
     unawaited(store.suspend());
     super.dispose();
   }
@@ -82,13 +241,23 @@ class _LiveMapScreenState extends State<LiveMapScreen>
   Future<void> _share() async {
     final snapshot = store.snapshot;
     if (snapshot == null) return;
+    if (simulation != null) {
+      final confirmed = await liveConfirm(
+        context,
+        'Show your test marker?',
+        'Your marker stays at the campus meetup. No GPS is accessed or sent. You remain the admin of this local test.',
+        label: 'Show test marker',
+      );
+      if (confirmed && mounted) await store.share();
+      return;
+    }
     final consent = await liveConfirm(
       context,
       'Share your live location?',
       'Everyone who joins “${snapshot.session['name']}” can see your latest location and accuracy, including members invited later.\n\n'
           'Sharing ends at ${DateTime.parse(snapshot.session['expires_at'] as String).toLocal()}. It runs only while this map is open in the foreground.\n\n'
           'Stop removes your position. If offline, others may see the last position for up to 30 seconds. No route history is kept in the app. Managed backups can retain deleted rows under the deployment retention policy.\n\n'
-          '${store.trip.demo ? 'Demo: synthetic positions only; your GPS is never accessed.' : 'Your device will ask for location permission next. You can decline and still view the group.'}',
+          '${store.simulated ? 'Demo: synthetic positions only; your GPS is never accessed.' : 'Your device will ask for location permission next. You can decline and still view the group.'}',
       label: 'Agree and share',
     );
     if (consent && mounted) await store.share();
@@ -222,14 +391,20 @@ class _LiveMapScreenState extends State<LiveMapScreen>
           .firstOrNull;
       return Scaffold(
         appBar: AppBar(
-          title: const Text('Live Map'),
+          title: Text(simulation == null ? 'Live Map' : 'CUSAT · test run'),
           actions: [
             IconButton(
               tooltip: 'Refresh Live Map',
               onPressed: store.refresh,
               icon: const Icon(Icons.refresh),
             ),
-            if (store.sessionId != null)
+            if (simulation != null)
+              IconButton(
+                tooltip: 'Reset run',
+                onPressed: _resetSimulation,
+                icon: const Icon(Icons.restart_alt),
+              ),
+            if (store.sessionId != null && simulation == null)
               PopupMenuButton<String>(
                 tooltip: 'Session actions',
                 onSelected: (action) {
@@ -275,7 +450,49 @@ class _LiveMapScreenState extends State<LiveMapScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (store.trip.demo)
+              if (simulation != null) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Text(
+                        'SIMULATION · YOU ARE ADMIN',
+                        style: TextStyle(
+                          fontSize: 11,
+                          letterSpacing: 1,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: _testControls,
+                        icon: const Icon(Icons.tune, size: 18),
+                        label: const Text('Test controls'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () {
+                          simulation!.running = !simulation!.running;
+                          unawaited(store.refresh());
+                        },
+                        icon: Icon(
+                          simulation!.running ? Icons.pause : Icons.play_arrow,
+                          size: 18,
+                        ),
+                        label: Text(
+                          simulation!.running
+                              ? 'Pause runners'
+                              : 'Resume runners',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ] else if (store.trip.demo)
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   child: Text(
@@ -327,7 +544,7 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                                         .titleMedium,
                                   ),
                                 ),
-                                if (store.organizer)
+                                if (store.organizer && simulation == null)
                                   IconButton(
                                     tooltip: 'Invite trip contacts',
                                     onPressed: store.busy ? null : _invite,
@@ -384,7 +601,8 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                                 destination: snapshot.destination,
                                 focus: selected,
                                 onPoint: _destination,
-                                demo: store.trip.demo,
+                                demo: store.simulated,
+                                campus: simulation != null,
                               ),
                             ),
                           ),
@@ -427,7 +645,11 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                       children: [
                         Text(
                           store.sharing
-                              ? 'Sharing live location'
+                              ? simulation != null
+                                    ? 'Your test marker is visible'
+                                    : 'Sharing live location'
+                              : simulation != null
+                              ? 'Your GPS stays off'
                               : 'Location sharing is off',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
@@ -447,7 +669,11 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                                 ? null
                                 : _share,
                             icon: const Icon(Icons.my_location),
-                            label: const Text('Share location'),
+                            label: Text(
+                              simulation == null
+                                  ? 'Share location'
+                                  : 'Show my test marker',
+                            ),
                           ),
                       ],
                     ),
@@ -464,6 +690,16 @@ class _LiveMapScreenState extends State<LiveMapScreen>
         title: 'Find your group',
         subtitle: 'Wander your own way. Meet back here.\nShare your location only when you choose.',
       ),
+      if (simulation == null)
+        OutlinedButton.icon(
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => CampusTestRoute(trip: store.trip),
+            ),
+          ),
+          icon: const Icon(Icons.directions_run),
+          label: const Text('Try CUSAT with test runners'),
+        ),
       const TravelSketch(height: 165),
       const SizedBox(height: 24),
       FilledButton.icon(

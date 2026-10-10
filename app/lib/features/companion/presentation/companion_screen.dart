@@ -771,6 +771,22 @@ class _CompanionScreenState extends State<CompanionScreen>
         Card(
           color: LayoverColors.wash,
           child: ListTile(
+            leading: const Icon(Icons.directions_run),
+            title: const Text('CUSAT · 3D test run'),
+            subtitle: const Text(
+              'Your phone is admin. Three test runners join you.',
+            ),
+            trailing: const Icon(Icons.north_east),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => CampusTestRoute(trip: store),
+              ),
+            ),
+          ),
+        ),
+        Card(
+          color: LayoverColors.wash,
+          child: ListTile(
             leading: const Icon(Icons.travel_explore),
             title: const Text('Explore within budget'),
             subtitle: const Text('Good places. A budget that fits.'),

@@ -21,6 +21,7 @@ class LiveMapStore extends ChangeNotifier {
   final TripStore trip;
   final LiveMapApi api;
   final DeviceLocation device;
+  bool get simulated => api.simulated;
   final String _identity;
   List<Json> sessions = [], contacts = [];
   LiveSnapshot? snapshot;
@@ -195,7 +196,7 @@ class LiveMapStore extends ChangeNotifier {
     error = null;
     _notify();
     try {
-      if (!trip.demo) await device.requestPermission();
+      if (!simulated) await device.requestPermission();
       if (!_valid(epoch) || shareEpoch != _shareEpoch) return;
       final result = await api.command('consent', {
         'session_id': id,
@@ -208,11 +209,11 @@ class LiveMapStore extends ChangeNotifier {
       _generation = result['generation'] as int;
       _sequence = 0;
       _lastPublish = null;
-      _leaseUntil = trip.demo
+      _leaseUntil = simulated
           ? null
           : DateTime.now().add(const Duration(seconds: 28));
       sharing = true;
-      if (!trip.demo) {
+      if (!simulated) {
         _fixes = device.fixes().listen(
           (fix) => _publish(fix, epoch, shareEpoch),
           onError: (Object _) {
