@@ -213,3 +213,30 @@ No hosted migration, actual Mapbox rendering/3D/telemetry behavior, real GPS,
 physical Android lifecycle, hosted HTTP race, Cron execution, or provider
 retention check has been performed from this workspace. Complete the release
 checks above with development credentials and devices.
+
+## CUSAT single-phone verification · 11 October 2026
+
+The local campus test is available from Overview or the Live Map session list.
+It retains the current account as organizer and creates three synthetic runners
+in memory. It does not sign out, request GPS, or publish simulated fixes to
+Supabase. See the app README for its pause, speed, offline, reset, and removal
+controls. Building heights and the test loop are approximate, not surveyed
+campus geometry or walking directions.
+
+- Static analysis and all 60 Flutter tests passed at the campus checkpoint.
+  The additional UI tests exercise 360px and 1200px layouts, real-account admin
+  identity, synthetic consent, stop, removal, regroup, reset, and GPS isolation.
+- `tool/campus_browser_check.cjs` passed at 390px and 1440px with the configured
+  public Mapbox token. It verified pitched 3D building layers, rendered building
+  features, automatically changing runner coordinates, speed/offline controls,
+  synthetic admin consent/stop, and zero backend RPC requests.
+- The browser check uses the build's bundled CanvasKit binaries. For unreliable
+  CDN connections, `MAPBOX_GL_PATH` may point to a local copy of the official
+  Mapbox GL JS version used by the Flutter plugin. Real map tiles still load
+  from Mapbox. No map data or renderer is mocked by the check.
+- The configured Android debug APK built and installed successfully with
+  `adb install -r`, preserving existing app data.
+
+This verifies the single-phone simulation and browser rendering; it does not
+replace the hosted multi-account, physical GPS, lifecycle, or retention checks
+listed above.
