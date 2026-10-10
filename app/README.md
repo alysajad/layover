@@ -136,6 +136,38 @@ not substitute for deployment and user checks.
 
 ## Live Map
 
+### Test with one phone at CUSAT
+
+Open **Overview → CUSAT · 3D test run**, or **Live Map → Try CUSAT with test
+runners**. The signed-in account remains the test session's admin. Three local
+simulated phones move around a campus test loop; no extra accounts or phones
+are needed. This is a UI simulation, not a hosted multi-device/GPS test.
+
+- **Test controls** changes speed (1×, 5×, 10×) and sets each runner to running,
+  paused, or offline. Offline fixes turn stale after 15 seconds and disappear
+  after 30 seconds. Paused runners stay connected.
+- Tap a traveler to follow them. Tap the map to choose a regroup point. The
+  admin can remove simulated members. **Reset run** restores all three.
+- **Show my test marker** puts a synthetic admin marker at the campus meetup;
+  it never requests GPS. Leaving/backgrounding the screen stops the test loop.
+
+Mapbox shows the main CUSAT campus in Kalamassery with extruded building
+footprints. Heights use provider data with a minimum visual height of 9 metres
+and are approximate. The runner loop is a synthetic test fixture, not verified
+walking directions. The map needs the existing public Mapbox token and internet;
+if it fails, member controls remain available. Simulated locations stay in memory
+and never reach Supabase or the real trip's stored data.
+
+Campus reference: [CUSAT main campus](https://www.cusat.ac.in/main-campus.php).
+Map rendering: [Mapbox building extrusions](https://docs.mapbox.com/help/dive-deeper/z_add-3d-buildings-studio/).
+
+```sh
+flutter test test/campus_simulation_test.dart test/campus_run_ui_test.dart
+flutter build web --release --dart-define-from-file=env.json
+# With tool/preview.cjs running and Playwright installed:
+NODE_PATH=/tmp/layover-check/node_modules node tool/campus_browser_check.cjs
+```
+
 Overview and the no-trip home include **Live Map · Find your group**. Create a
 private session, invite existing trip contacts, and start it. Each person joins
 and opts into foreground sharing for that session. The demo uses synthetic
