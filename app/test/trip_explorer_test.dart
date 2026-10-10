@@ -22,6 +22,7 @@ Json settings() => {
 };
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   test('currency precision, zero, rounding and invalid input', () {
     expect(readMoney('10.01', 'INR'), 1001);
     expect(readMoney('10.001', 'KWD'), 10001);

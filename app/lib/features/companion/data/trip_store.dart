@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/env.dart';
 import '../domain/models.dart';
+import 'payment_capture.dart';
 
 const uuid = Uuid();
 
@@ -16,7 +17,10 @@ class TripStore extends ChangeNotifier {
     this.client,
     this.persistence = true,
     this.syncInterval = const Duration(seconds: 5),
-  });
+  }) {
+    payments.addListener(_notify);
+  }
+  final PaymentCapture payments = PaymentCapture();
   final Duration syncInterval;
   final SupabaseClient? client;
   final bool persistence;
@@ -58,6 +62,7 @@ class TripStore extends ChangeNotifier {
     if (_initialized) return;
     _initialized = true;
     if (persistence) _prefs = await SharedPreferences.getInstance();
+    payments.initialize(_prefs);
     if (_disposed) return;
     if (client == null) {
       await startDemo();
@@ -85,6 +90,7 @@ class TripStore extends ChangeNotifier {
   }
 
   void _clearAccount() {
+    unawaited(payments.bindAccount(''));
     _epoch++;
     _refreshTimer?.cancel();
     _refreshFuture = null;
@@ -121,6 +127,7 @@ class TripStore extends ChangeNotifier {
     if (!value) {
       _refreshTimer?.cancel();
     } else {
+      unawaited(payments.refresh());
       unawaited(refresh(silent: true));
     }
   }
@@ -213,6 +220,7 @@ class TripStore extends ChangeNotifier {
   }
 
   void _loadDrafts() {
+    unawaited(payments.bindAccount(userId));
     try {
       drafts = rows(jsonDecode(_prefs?.getString(_draftKey) ?? '[]'));
     } catch (_) {
@@ -332,7 +340,7 @@ class TripStore extends ChangeNotifier {
     final user = userId;
     final isDemo = demo;
     final pendingKey = 'layover.pending.$user';
-    final id = requestId ?? uuid.v4();
+    final id = requestId ?? data['capture_id'] as String? ?? uuid.v4();
     // Capture nested form data before any await or user/account change.
     final payload = jsonDecode(jsonEncode(data)) as Json;
     busy = true;
@@ -433,9 +441,9 @@ class TripStore extends ChangeNotifier {
   Future<void> submitDraft(Json draft) async {
     final payload = {...draft}..remove('draft_id');
     final result = await command(
-      'add_expense',
+      draft['personal'] == true ? 'add_personal_expense' : 'add_expense',
       payload,
-      requestId: draft['draft_id'] as String,
+      requestId: draft['capture_id'] as String? ?? draft['draft_id'] as String,
     );
     if (result != null) await removeDraft(draft['draft_id'] as String);
   }
@@ -477,6 +485,7 @@ class TripStore extends ChangeNotifier {
     _epoch++;
     _auth?.cancel();
     _refreshTimer?.cancel();
+    payments.dispose();
     super.dispose();
   }
 
@@ -637,7 +646,39 @@ class TripStore extends ChangeNotifier {
         e['details'] = {...details, 'selected': true, 'choice': data['choice']};
         e['version'] = (e['version'] as int) + 1;
       }
+    } else if (action == 'add_personal_expense') {
+      final existing = list('personal_expenses')
+          .where(
+            (e) =>
+                data['capture_id'] != null &&
+                e['capture_id'] == data['capture_id'] &&
+                e['created_by'] == userId,
+          )
+          .firstOrNull;
+      if (existing != null) return {'id': existing['id']};
+      final id = uuid.v4();
+      require((data['amount_minor'] as int) > 0, 'Enter a positive amount.');
+      list(
+        'personal_expenses',
+      ).insert(0, {...data, 'id': id, 'created_by': userId, 'created_at': now});
+      return {'id': id};
+    } else if (action == 'void_personal_expense') {
+      final expense = list('personal_expenses')
+          .firstWhere((e) => e['id'] == data['id'] && e['trip_id'] == tid);
+      require(expense['created_by'] == userId, 'Expense access denied.');
+      expense['voided_at'] = now;
+      return {'id': expense['id']};
     } else if (action == 'save_pot' || action == 'add_expense') {
+      if (action == 'add_expense' && data['capture_id'] != null) {
+        final existing = list('expenses')
+            .where(
+              (e) =>
+                  e['capture_id'] == data['capture_id'] &&
+                  e['created_by'] == userId,
+            )
+            .firstOrNull;
+        if (existing != null) return {'id': existing['id']};
+      }
       final amount = data['amount_minor'] as int;
       final weights = Map<String, dynamic>.from(data['weights'] as Map)
           .map((k, v) => MapEntry(k, (v as num).toInt()));

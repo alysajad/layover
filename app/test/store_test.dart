@@ -4,6 +4,7 @@ import 'package:layover/features/companion/data/trip_store.dart';
 import 'package:layover/features/companion/domain/models.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   test(
     'demo persists edits and isolates financial status from local drafts',
     () async {

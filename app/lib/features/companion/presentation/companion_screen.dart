@@ -13,6 +13,7 @@ import '../data/trip_store.dart';
 import '../data/push_notifications.dart';
 import '../domain/models.dart';
 import 'forms.dart';
+import 'payment_inbox.dart';
 import '../../live_map/presentation/live_map_screen.dart';
 import '../../trip_explorer/presentation/explorer_screen.dart';
 
@@ -109,7 +110,11 @@ class _CompanionScreenState extends State<CompanionScreen>
   }
 
   Future<Json?> run(String action, Json data) async {
-    final result = await store.command(action, data);
+    final result = await store.command(
+      action,
+      data,
+      requestId: data['capture_id'] as String?,
+    );
     if (result == null && store.error != null) message(store.error!);
     return result;
   }
@@ -180,8 +185,8 @@ class _CompanionScreenState extends State<CompanionScreen>
       {
         'title': 'Trip name',
         'destination': 'Destination',
-        'start_date': 'Start date (YYYY-MM-DD)',
-        'end_date': 'End date (YYYY-MM-DD)',
+        'start_date': 'Start date',
+        'end_date': 'End date',
       },
       initial: edit
           ? {
@@ -258,6 +263,9 @@ class _CompanionScreenState extends State<CompanionScreen>
     if (data == null || user != store.userId) return;
     if (store.offline && !pot) {
       await store.saveDraft(data);
+      if (data['capture_id'] case final String id) {
+        await store.payments.dismiss(id);
+      }
       message('Expense draft saved on this device.');
       return;
     }
@@ -272,18 +280,36 @@ class _CompanionScreenState extends State<CompanionScreen>
                 .organizer
           : null,
     );
-    final summary = shares.entries
-        .map(
-          (e) =>
-              '${store.snapshot.name(data['trip_id'] as String, e.key)}: ${money(e.value)}',
-        )
-        .join('\n');
+    final summary = data['personal'] == true
+        ? '${money(data['amount_minor'] as int)} · ${data['category']}\nOnly you can see this expense. Group balances stay the same.'
+        : shares.entries
+              .map(
+                (e) =>
+                    '${store.snapshot.name(data['trip_id'] as String, e.key)}: ${money(e.value)}',
+              )
+              .join('\n');
     if (await confirm(
-      pot ? 'Propose these shares?' : 'Record this expense?',
+      pot
+          ? 'Propose these shares?'
+          : data['personal'] == true
+          ? 'Save personal expense?'
+          : 'Record this expense?',
       '$summary${pot ? '\n\nEvery participant must accept these terms.' : ''}',
     )) {
       if (user != store.userId) return;
-      await run(pot ? 'save_pot' : 'add_expense', data);
+      final result = await run(
+        pot
+            ? 'save_pot'
+            : data['personal'] == true
+            ? 'add_personal_expense'
+            : 'add_expense',
+        data,
+      );
+      if (result != null &&
+          user == store.userId &&
+          data['capture_id'] is String) {
+        await store.payments.dismiss(data['capture_id'] as String);
+      }
     }
   }
 
@@ -1294,6 +1320,12 @@ class _CompanionScreenState extends State<CompanionScreen>
         ],
       ),
       const SizedBox(height: 20),
+      if (store.offline && moneyView == 'Expenses')
+        PaymentInbox(
+          key: ValueKey('${store.userId}:${store.selectedTrip}'),
+          store: store,
+          onReview: (initial) => addMoney(initial: initial),
+        ),
       if (store.offline)
         empty(
           'Financial totals need a connection',
@@ -1599,6 +1631,13 @@ class _CompanionScreenState extends State<CompanionScreen>
 
   Widget expensesPage() {
     final expenses = store.snapshot.expenses(store.selectedTrip!);
+    final personal = rows(store.snapshot.data['personal_expenses'])
+        .where(
+          (e) =>
+              e['trip_id'] == store.selectedTrip &&
+              e['created_by'] == store.userId,
+        )
+        .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1610,15 +1649,22 @@ class _CompanionScreenState extends State<CompanionScreen>
             label: const Text('Add expense'),
           ),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
+        PaymentInbox(
+          key: ValueKey('${store.userId}:${store.selectedTrip}'),
+          store: store,
+          onReview: (initial) => addMoney(initial: initial),
+        ),
+        const SizedBox(height: 16),
         if (expenses.isEmpty)
           empty('No shared expenses yet', icon: Icons.receipt_long_outlined),
         for (final e in expenses)
           Card(
             child: ExpansionTile(
+              key: PageStorageKey('expense:${e.id}'),
               title: Text(e.title),
               subtitle: Text(
-                '${money(e.amount)} · ${store.snapshot.name(store.selectedTrip!, e.payer)}${e.voided ? ' · Voided' : ''}',
+                '${money(e.amount)} · ${e.data['category'] ?? 'Other'} · ${store.snapshot.name(store.selectedTrip!, e.payer)}${e.data['expense_date'] == null ? '' : ' · ${tripDate(e.data['expense_date'] as String)}'}${e.voided ? ' · Voided' : ''}',
               ),
               children: [
                 for (final split in e.splits.entries)
@@ -1673,6 +1719,34 @@ class _CompanionScreenState extends State<CompanionScreen>
               ],
             ),
           ),
+        if (personal.isNotEmpty) ...[
+          section('Personal expenses · only you'),
+          Text(
+            'Total: ${money(personal.where((e) => e['voided_at'] == null).fold<int>(0, (total, e) => total + (e['amount_minor'] as num).toInt()))}',
+          ),
+          for (final e in personal)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.lock_outline),
+                title: Text(e['title'] as String),
+                subtitle: Text(
+                  '${money((e['amount_minor'] as num).toInt())} · ${e['category']} · ${tripDate(e['expense_date'] as String)}${e['voided_at'] != null ? ' · Voided' : ''}',
+                ),
+                trailing: e['voided_at'] != null
+                    ? null
+                    : IconButton(
+                        tooltip: 'Void personal expense',
+                        icon: const Icon(Icons.undo),
+                        onPressed: canEdit
+                            ? () => run('void_personal_expense', {
+                                'trip_id': store.selectedTrip,
+                                'id': e['id'],
+                              })
+                            : null,
+                      ),
+              ),
+            ),
+        ],
       ],
     );
   }

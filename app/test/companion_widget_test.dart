@@ -72,6 +72,10 @@ void main() {
         find.widgetWithText(TextFormField, 'Title'),
         'Food budget',
       );
+      await tester.tap(find.text('Dates'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Budget').last);
+      await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Options (one per line)'),
         '1000\n2000',

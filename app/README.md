@@ -48,7 +48,7 @@ to localhost and serves the current release build; rebuild after code changes.
 ## Connect Supabase
 
 1. Create a development Supabase project. Apply
-   `supabase/migrations/0001_init.sql`, then `0002_companion.sql`, then `0003_live_map.sql` in that order.
+   `supabase/migrations/0001_init.sql` through `0005_payment_expenses.sql` in numeric order.
    These migrations create a private `trip-files` storage bucket as well.
    Apply `0004_trip_explorer.sql` and follow [Explorer deployment](../docs/trip-explorer-operations.md)
    to enable connected budget exploration.
@@ -106,7 +106,7 @@ flutter build web --release
 flutter build apk --debug
 ```
 
-Database checks run all three migrations against isolated PostgreSQL (PGlite), with
+Database checks run the relevant migrations against isolated PostgreSQL (PGlite), with
 test auth/storage schemas. They never connect to a hosted database:
 
 ```sh
@@ -182,3 +182,49 @@ token restrictions, billing, cleanup, privacy, and the two-client simulation.
 The feature uses `mapbox_maps_flutter` 3.0.0 and `geolocator` 14.1.1. The unused
 `connectivity_plus` dependency was removed because its Linux DBus requirement
 conflicted with geolocator; no existing app code imported it.
+
+## Payment capture and personal expenses
+
+Apply `supabase/migrations/0005_payment_expenses.sql` after the existing migrations
+before shipping this app version. It preserves historical expense dates, adds
+private personal expenses, and keeps shared expenses on the existing accounting
+RPC. Personal expenses are visible only to their author, do not create group
+activity or notifications, and never enter group balances or the shared CSV.
+
+In **Money → Expenses**, choose **Set up capture** in the Android app. Set trip
+start/end dates, choose payment/SMS apps, and grant Android notification access.
+Capture runs for one selected trip at a time, only for new notifications within
+its date window. The listener can queue notifications while Flutter is closed;
+opening the app processes that queue into the payment inbox. Stop capture in the
+same panel. Signing out or switching accounts disables capture and clears the
+native queue. Re-enable after changing the trip's capture dates.
+
+Supported sources are Google Pay, PhonePe, Paytm, BHIM, Google Messages, and
+Samsung Messages. Bank SMS alerts must appear as notifications from a selected
+SMS app. No SMS database permission is requested. The app does not process old
+notifications or notification content hidden by Android/the source app. See
+[Android NotificationListenerService](https://developer.android.com/reference/android/service/notification/NotificationListenerService)
+for OS and work-profile restrictions. Physical-device testing of notification
+access, background capture, and each payment app remains a release check.
+
+The parser supports completed outgoing INR payments with deterministic,
+editable category suggestions. OTPs, incoming payments, refunds, failures,
+pending payments, and payment requests are ignored. Unknown merchants use Other.
+Notification text stays in the app-private native queue (up to 200 candidates)
+and is removed after parsed details are saved locally. Transaction references
+are used to deduplicate alerts across sources; without a reference, native
+notification identity is used. Duplicate pasted text is detected within the same
+day. Android backup is disabled to keep the queue off backup services.
+
+On any platform, **Paste payment message** offers the same review workflow.
+Review the suggested title, amount, category, and expense date; choose **Split
+with trip** or **Personal · only me**. Review is required before balances change.
+Only the reviewed fields are sent to Supabase. Offline reviews remain account-
+bound drafts until submitted online. Captured payments use stable request IDs,
+so retries cannot charge the group twice. Notification text is not proof that a
+payment settled.
+
+Date fields use native Material calendars and time pickers, including trip
+setup, bookings, reminders, itinerary entries, pot deadlines, expense dates,
+date poll options, and explorer start/end times. Times display locally and are
+stored in UTC where the existing API expects timestamps.

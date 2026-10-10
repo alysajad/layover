@@ -2,6 +2,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/date_field.dart';
+import '../domain/payment_message.dart';
 import '../data/trip_store.dart';
 import '../domain/models.dart';
 
@@ -83,18 +85,33 @@ class _FieldsDialogState extends State<FieldsDialog> {
               for (final f in widget.fields.entries)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 16),
-                  child: TextFormField(
-                    controller: controllers[f.key],
-                    decoration: InputDecoration(labelText: f.value),
-                    maxLines: ['body', 'notes', 'terms'].contains(f.key)
-                        ? 4
-                        : 1,
-                    validator: (v) =>
-                        !widget.optional.contains(f.key) &&
-                            (v?.trim().isEmpty ?? true)
-                        ? 'Required'
-                        : null,
-                  ),
+                  child: ['start_date', 'end_date'].contains(f.key)
+                      ? DateField(
+                          controller: controllers[f.key]!,
+                          label: f.value,
+                          optional: widget.optional.contains(f.key),
+                          onChanged: () => setState(() {}),
+                          initialDate: DateTime.tryParse(
+                            controllers['start_date']?.text ?? '',
+                          ),
+                          firstDate: f.key == 'end_date'
+                              ? DateTime.tryParse(
+                                  controllers['start_date']?.text ?? '',
+                                )
+                              : null,
+                        )
+                      : TextFormField(
+                          controller: controllers[f.key],
+                          decoration: InputDecoration(labelText: f.value),
+                          maxLines: ['body', 'notes', 'terms'].contains(f.key)
+                              ? 4
+                              : 1,
+                          validator: (v) =>
+                              !widget.optional.contains(f.key) &&
+                                  (v?.trim().isEmpty ?? true)
+                              ? 'Required'
+                              : null,
+                        ),
                 ),
             ],
           ),
@@ -166,16 +183,15 @@ class _EntryFormState extends State<EntryForm> {
       'url': 'Booking or listing link',
     if (widget.kind == 'shortlist') 'price': 'Total price (INR)',
     if (['itinerary', 'meeting', 'booking'].contains(widget.kind)) ...{
-      'date': 'Date (YYYY-MM-DD)',
-      'time': 'Time (HH:MM)',
+      'date': 'Date',
+      'time': 'Time',
       'address': 'Address',
     },
-    if (['booking', 'task'].contains(widget.kind))
-      'remind_at': 'Reminder (YYYY-MM-DD HH:MM)',
+    if (['booking', 'task'].contains(widget.kind)) 'remind_at': 'Reminder',
     if (widget.kind == 'booking') ...{
       'reference': 'Confirmation reference',
       'cancellation': 'Cancellation terms',
-      'payment_due': 'Payment due (YYYY-MM-DD)',
+      'payment_due': 'Payment due',
     },
     if (widget.kind == 'contact') 'phone': 'Contact phone',
     'notes': 'Notes',
@@ -204,6 +220,54 @@ class _EntryFormState extends State<EntryForm> {
     }
     super.dispose();
   }
+
+  Widget dateOptions() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text('Date options'),
+      Wrap(
+        spacing: 8,
+        children: [
+          for (final option
+              in controllers['options']!.text
+                  .split('\n')
+                  .where((s) => s.isNotEmpty))
+            InputChip(
+              label: Text(option),
+              onDeleted: () => setState(() {
+                controllers['options']!.text = controllers['options']!.text
+                    .split('\n')
+                    .where((s) => s != option)
+                    .join('\n');
+              }),
+            ),
+        ],
+      ),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.date_range),
+        label: const Text('Add date option'),
+        onPressed: () async {
+          final range = await showDateRangePicker(
+            context: context,
+            firstDate: DateTime(2000),
+            lastDate: DateTime(2100, 12, 31),
+          );
+          if (range == null || !mounted) return;
+          final start = DateFormat('yyyy-MM-dd').format(range.start);
+          final end = DateFormat('yyyy-MM-dd').format(range.end);
+          final option = start == end ? start : '$start – $end';
+          setState(() {
+            controllers['options']!.text = {
+              ...controllers['options']!.text
+                  .split('\n')
+                  .where((s) => s.isNotEmpty),
+              option,
+            }.join('\n');
+          });
+        },
+      ),
+    ],
+  );
 
   Future<void> attach() async {
     setState(() => uploading = true);
@@ -330,20 +394,44 @@ class _EntryFormState extends State<EntryForm> {
               for (final f in fields.entries)
                 Padding(
                   padding: const EdgeInsets.only(top: 16),
-                  child: TextFormField(
-                    controller: controllers[f.key],
-                    decoration: InputDecoration(labelText: f.value),
-                    maxLength: f.key == 'title' ? 240 : null,
-                    maxLines:
-                        ['notes', 'options', 'cancellation'].contains(f.key)
-                        ? 3
-                        : 1,
-                    validator: (v) =>
-                        ['title', 'options'].contains(f.key) &&
-                            (v?.trim().isEmpty ?? true)
-                        ? 'Required'
-                        : null,
-                  ),
+                  child:
+                      [
+                        'date',
+                        'payment_due',
+                        'remind_at',
+                        'time',
+                      ].contains(f.key)
+                      ? DateField(
+                          controller: controllers[f.key]!,
+                          label: f.value,
+                          optional: true,
+                          initialDate: DateTime.tryParse(trip.start),
+                          kind: f.key == 'time'
+                              ? DateFieldKind.time
+                              : f.key == 'remind_at'
+                              ? DateFieldKind.dateTime
+                              : DateFieldKind.date,
+                        )
+                      : f.key == 'options' && pollType == 'Dates'
+                      ? dateOptions()
+                      : TextFormField(
+                          controller: controllers[f.key],
+                          decoration: InputDecoration(labelText: f.value),
+                          maxLength: f.key == 'title' ? 240 : null,
+                          maxLines:
+                              [
+                                'notes',
+                                'options',
+                                'cancellation',
+                              ].contains(f.key)
+                              ? 3
+                              : 1,
+                          validator: (v) =>
+                              ['title', 'options'].contains(f.key) &&
+                                  (v?.trim().isEmpty ?? true)
+                              ? 'Required'
+                              : null,
+                        ),
                 ),
               if (['task', 'booking'].contains(widget.kind))
                 Padding(
@@ -490,7 +578,13 @@ class _MoneyFormState extends State<MoneyForm> {
   late SplitMode mode = widget.initial?['shares'] is Map
       ? SplitMode.exact
       : SplitMode.equal;
-  String category = 'Stay';
+  late String category = widget.initial?['category'] as String? ?? 'Other';
+  late bool personal = widget.initial?['personal'] == true;
+  late final expenseDate = TextEditingController(
+    text:
+        widget.initial?['expense_date'] as String? ??
+        DateFormat('yyyy-MM-dd').format(DateTime.now()),
+  );
   String? error;
   String? receipt;
   bool uploading = false;
@@ -502,6 +596,7 @@ class _MoneyFormState extends State<MoneyForm> {
       terms,
       deadline,
       cover,
+      expenseDate,
       ...weights.values,
     ]) {
       c.dispose();
@@ -537,13 +632,16 @@ class _MoneyFormState extends State<MoneyForm> {
     try {
       requireFormTrip(widget.store, accountId, tripId);
       final total = parseMoney(amount.text);
-      final inputs = readWeights();
+      final inputs = personal && !widget.pot
+          ? {accountId: total}
+          : readWeights();
       splitAmount(
         total,
         inputs,
-        mode: mode,
+        mode: personal && !widget.pot ? SplitMode.exact : mode,
         remainderUser: widget.pot ? trip.organizer : null,
       );
+      if (!widget.pot) DateFormat('yyyy-MM-dd').parseStrict(expenseDate.text);
       DateTime? due;
       var covered = 0;
       if (widget.pot) {
@@ -562,7 +660,7 @@ class _MoneyFormState extends State<MoneyForm> {
         'trip_id': tripId,
         'title': title.text.trim(),
         'amount_minor': total,
-        'split_mode': mode.name,
+        'split_mode': personal && !widget.pot ? 'exact' : mode.name,
         'weights': inputs,
         if (widget.pot) ...{
           'deadline_at': due!.toUtc().toIso8601String(),
@@ -571,8 +669,12 @@ class _MoneyFormState extends State<MoneyForm> {
           'version': potVersion,
         },
         if (!widget.pot) ...{
-          'payer_id': payer,
+          'payer_id': personal ? accountId : payer,
           'category': category,
+          'personal': personal,
+          'expense_date': expenseDate.text,
+          if (widget.initial?['capture_id'] != null)
+            'capture_id': widget.initial!['capture_id'],
           if (receipt != null) 'receipt_path': receipt,
         },
       });
@@ -650,113 +752,138 @@ class _MoneyFormState extends State<MoneyForm> {
                 ),
                 if (!widget.pot) ...[
                   const SizedBox(height: 16),
-                  DropdownButtonFormField<String>(
-                    initialValue: payer,
+                  DateField(controller: expenseDate, label: 'Expense date'),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<bool>(
+                    initialValue: personal,
                     isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Paid by'),
-                    items: [
-                      for (final m in members.where((m) => m.active))
-                        DropdownMenuItem(value: m.id, child: Text(m.name)),
+                    decoration: const InputDecoration(
+                      labelText: 'Expense type',
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: false,
+                        child: Text('Split with trip'),
+                      ),
+                      DropdownMenuItem(
+                        value: true,
+                        child: Text('Personal · only me'),
+                      ),
                     ],
-                    onChanged: (v) => payer = v!,
+                    onChanged: (v) => setState(() => personal = v!),
                   ),
+                  if (personal)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Text(
+                        'Only you can see this expense. It does not affect group balances.',
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  if (!personal)
+                    DropdownButtonFormField<String>(
+                      initialValue: payer,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Paid by'),
+                      items: [
+                        for (final m in members.where((m) => m.active))
+                          DropdownMenuItem(value: m.id, child: Text(m.name)),
+                      ],
+                      onChanged: (v) => payer = v!,
+                    ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<String>(
                     initialValue: category,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Category'),
                     items: [
-                      for (final c in [
-                        'Stay',
-                        'Transport',
-                        'Food',
-                        'Activities',
-                        'Other',
-                      ])
+                      for (final c in expenseCategories)
                         DropdownMenuItem(value: c, child: Text(c)),
                     ],
                     onChanged: (v) => category = v!,
                   ),
                 ],
                 const SizedBox(height: 20),
-                DropdownButtonFormField<SplitMode>(
-                  isExpanded: true,
-                  initialValue: mode,
-                  decoration: const InputDecoration(labelText: 'Split'),
-                  items: [
-                    for (final m in SplitMode.values)
-                      DropdownMenuItem(
-                        value: m,
-                        child: Text(switch (m) {
-                          SplitMode.equal => 'Equally',
-                          SplitMode.exact => 'Exact amounts',
-                          SplitMode.percentage => 'Percentages',
-                          SplitMode.weighted => 'Weights / nights',
-                        }),
-                      ),
-                  ],
-                  onChanged: (v) => setState(() => mode = v!),
-                ),
-                const SizedBox(height: 12),
-                for (final m in members.where((m) => m.active))
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            Checkbox(
-                              value: selected.contains(m.id),
-                              onChanged: (v) => setState(
-                                () => v!
-                                    ? selected.add(m.id)
-                                    : selected.remove(m.id),
-                              ),
-                            ),
-                            Expanded(child: Text(m.name)),
-                            if (mode == SplitMode.equal)
-                              Flexible(
-                                child: Text(
-                                  shares == null
-                                      ? ''
-                                      : money(shares[m.id] ?? 0),
-                                  textAlign: TextAlign.end,
-                                ),
-                              ),
-                          ],
+                if (!personal || widget.pot)
+                  DropdownButtonFormField<SplitMode>(
+                    isExpanded: true,
+                    initialValue: mode,
+                    decoration: const InputDecoration(labelText: 'Split'),
+                    items: [
+                      for (final m in SplitMode.values)
+                        DropdownMenuItem(
+                          value: m,
+                          child: Text(switch (m) {
+                            SplitMode.equal => 'Equally',
+                            SplitMode.exact => 'Exact amounts',
+                            SplitMode.percentage => 'Percentages',
+                            SplitMode.weighted => 'Weights / nights',
+                          }),
                         ),
-                        if (mode != SplitMode.equal)
+                    ],
+                    onChanged: (v) => setState(() => mode = v!),
+                  ),
+                const SizedBox(height: 12),
+                if (!personal || widget.pot)
+                  for (final m in members.where((m) => m.active))
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Column(
+                        children: [
                           Row(
                             children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: weights[m.id],
-                                  enabled: selected.contains(m.id),
-                                  decoration: InputDecoration(
-                                    labelText: mode == SplitMode.percentage
-                                        ? '%'
-                                        : mode == SplitMode.exact
-                                        ? 'INR'
-                                        : 'Weight',
+                              Checkbox(
+                                value: selected.contains(m.id),
+                                onChanged: (v) => setState(
+                                  () => v!
+                                      ? selected.add(m.id)
+                                      : selected.remove(m.id),
+                                ),
+                              ),
+                              Expanded(child: Text(m.name)),
+                              if (mode == SplitMode.equal)
+                                Flexible(
+                                  child: Text(
+                                    shares == null
+                                        ? ''
+                                        : money(shares[m.id] ?? 0),
+                                    textAlign: TextAlign.end,
                                   ),
-                                  keyboardType: TextInputType.number,
-                                  onChanged: (_) => setState(() {}),
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  shares == null
-                                      ? ''
-                                      : money(shares[m.id] ?? 0),
-                                  textAlign: TextAlign.end,
-                                ),
-                              ),
                             ],
                           ),
-                      ],
+                          if (mode != SplitMode.equal)
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: weights[m.id],
+                                    enabled: selected.contains(m.id),
+                                    decoration: InputDecoration(
+                                      labelText: mode == SplitMode.percentage
+                                          ? '%'
+                                          : mode == SplitMode.exact
+                                          ? 'INR'
+                                          : 'Weight',
+                                    ),
+                                    keyboardType: TextInputType.number,
+                                    onChanged: (_) => setState(() {}),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    shares == null
+                                        ? ''
+                                        : money(shares[m.id] ?? 0),
+                                    textAlign: TextAlign.end,
+                                  ),
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
                 if (widget.pot) ...[
                   const SizedBox(height: 16),
                   TextFormField(
@@ -767,11 +894,10 @@ class _MoneyFormState extends State<MoneyForm> {
                     keyboardType: TextInputType.number,
                   ),
                   const SizedBox(height: 16),
-                  TextFormField(
+                  DateField(
                     controller: deadline,
-                    decoration: const InputDecoration(
-                      labelText: 'Deadline (YYYY-MM-DD)',
-                    ),
+                    label: 'Deadline',
+                    firstDate: DateUtils.dateOnly(DateTime.now()),
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
@@ -783,7 +909,7 @@ class _MoneyFormState extends State<MoneyForm> {
                     validator: (v) =>
                         v!.trim().isEmpty ? 'Terms are required' : null,
                   ),
-                ] else if (!widget.store.offline)
+                ] else if (!widget.store.offline && !personal)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
                     child: OutlinedButton.icon(

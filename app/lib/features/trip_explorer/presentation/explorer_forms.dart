@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/date_field.dart';
 import '../domain/explorer.dart';
 
 Future<Json?> settingsForm(
@@ -69,8 +70,8 @@ Future<Json?> settingsForm(
                 for (final field in [
                   ('budget', 'Total group budget'),
                   ('group', 'Travelers'),
-                  ('start', 'Start (ISO date and time)'),
-                  ('end', 'End (ISO date and time)'),
+                  ('start', 'Start date and time'),
+                  ('end', 'End date and time'),
                   ('lon', 'Start longitude'),
                   ('lat', 'Start latitude'),
                   ('end_lon', 'End longitude (optional)'),
@@ -80,10 +81,44 @@ Future<Json?> settingsForm(
                 ])
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
-                    child: TextField(
-                      controller: controllers[field.$1],
-                      decoration: InputDecoration(labelText: field.$2),
-                    ),
+                    child: ['start', 'end'].contains(field.$1)
+                        ? DateField(
+                            controller: controllers[field.$1]!,
+                            label: field.$2,
+                            kind: DateFieldKind.dateTime,
+                            firstDate: field.$1 == 'end'
+                                ? DateTime.tryParse(controllers['start']!.text)
+                                      ?.toLocal()
+                                : null,
+                          )
+                        : field.$1 == 'group'
+                        ? DropdownButtonFormField<int>(
+                            initialValue: int.tryParse(
+                              controllers['group']!.text,
+                            ),
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Travelers',
+                            ),
+                            items: [
+                              for (var i = 1; i <= 50; i++)
+                                DropdownMenuItem(
+                                  value: i,
+                                  child: Text(
+                                    '$i ${i == 1 ? 'traveler' : 'travelers'}',
+                                  ),
+                                ),
+                            ],
+                            onChanged: (v) => controllers['group']!.text = '$v',
+                          )
+                        : TextField(
+                            keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true,
+                              signed: true,
+                            ),
+                            controller: controllers[field.$1],
+                            decoration: InputDecoration(labelText: field.$2),
+                          ),
                   ),
                 const SizedBox(height: 12),
                 const Text(

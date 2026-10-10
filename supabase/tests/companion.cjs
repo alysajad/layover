@@ -20,7 +20,7 @@ const assert = require('node:assert/strict');
     create function storage.foldername(text) returns text[] language sql as $$ select string_to_array($1,'/') $$;
     grant usage on schema public,auth,storage to authenticated,anon,service_role;
   `);
-  for (const file of ['0001_init.sql','0002_companion.sql','0003_live_map.sql']) {
+  for (const file of ['0001_init.sql','0002_companion.sql','0003_live_map.sql','0005_payment_expenses.sql']) {
     try { await db.exec(readFileSync(join(__dirname,'../migrations',file),'utf8')); }
     catch (error) { console.error(`Migration failed: ${file}`, error.message); throw error; }
   }
@@ -46,6 +46,43 @@ const assert = require('node:assert/strict');
   await rejected('update_trip',{trip_id:trip,...creation,expected_updated_at:beforeEdit},/Trip changed/);
   const {token}=await cmd('invite',{trip_id:trip});
   for(const id of [b,c]) {await asUser(id);await cmd('join_trip',{token});}
+  await asUser(a);
+  const personalRequest=randomUUID();
+  const personalData={trip_id:trip,title:'Private coffee',amount_minor:125050,category:'Food',expense_date:'2026-10-11',capture_id:personalRequest};
+  const personal=await cmd('add_personal_expense',personalData,personalRequest);
+  assert.deepEqual(await cmd('add_personal_expense',personalData,personalRequest),personal);
+  const mine=await snapshot();
+  assert.equal(mine.personal_expenses.length,1);
+  assert.equal(mine.personal_expenses[0].expense_date,'2026-10-11');
+  assert.ok(!mine.expenses.some(e=>e.id===personal.id));
+  assert.ok(!JSON.stringify(mine.activity).includes('Private coffee'));
+  await rejected('add_personal_expense',{...personalData,amount_minor:0,capture_id:null},/check constraint/);
+  await rejected('add_personal_expense',{...personalData,category:'Invalid',capture_id:null},/check constraint/);
+  await rejected('add_personal_expense',personalData,/Capture ID/);
+  await assert.rejects(()=>cmd('add_personal_expense',{...personalData,title:'Changed'},personalRequest),/different input/);
+  await assert.rejects(()=>db.query('select public.companion_snapshot_base()'),/permission denied/);
+  await asUser(b);
+  const theirs=await snapshot();
+  assert.deepEqual(theirs.personal_expenses,[]);
+  assert.ok(!JSON.stringify(theirs.notifications).includes('Private coffee'));
+  assert.equal((await db.query('select * from personal_expenses')).rows.length,0);
+  await rejected('void_personal_expense',{trip_id:trip,id:personal.id},/access denied/);
+  await asUser(outsider);
+  await rejected('add_personal_expense',{...personalData,capture_id:null},/access denied/);
+  await asUser(a);
+  await cmd('void_personal_expense',{trip_id:trip,id:personal.id});
+  assert.ok((await snapshot()).personal_expenses[0].voided_at);
+  const capturedRequest=randomUUID();
+  const capturedData={trip_id:trip,title:'Captured cab',payer_id:a,amount_minor:30000,split_mode:'equal',weights:{[a]:1,[b]:1,[c]:1},category:'Transport',expense_date:'2026-10-10',capture_id:capturedRequest};
+  const captured=await cmd('add_expense',capturedData,capturedRequest);
+  assert.deepEqual(await cmd('add_expense',capturedData,capturedRequest),captured);
+  assert.equal((await snapshot()).expenses.filter(e=>e.capture_id===capturedRequest).length,1);
+  assert.equal((await snapshot()).expenses[0].expense_date,'2026-10-10');
+  await assert.rejects(()=>cmd('add_personal_expense',{...personalData,capture_id:capturedRequest},capturedRequest),/different input/);
+  await cmd('void_expense',{trip_id:trip,id:captured.id});
+  // Keep legacy accounting assertions focused on their original fixtures.
+  await db.exec('reset role');
+  await db.query('delete from trip_expenses where id=$1',[captured.id]);
   await asUser(a);
   await db.query('insert into storage.objects(bucket_id,name) values($1,$2)',['trip-files',`${trip}/${a}/receipt.pdf`]);
   await asUser(b);
