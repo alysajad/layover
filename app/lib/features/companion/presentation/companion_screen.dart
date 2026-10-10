@@ -14,6 +14,7 @@ import '../data/push_notifications.dart';
 import '../domain/models.dart';
 import 'forms.dart';
 import 'payment_inbox.dart';
+import '../../memories/presentation/memories_screen.dart';
 import '../../live_map/presentation/live_map_screen.dart';
 import '../../trip_explorer/presentation/explorer_screen.dart';
 
@@ -613,8 +614,10 @@ class _CompanionScreenState extends State<CompanionScreen>
           if (action == 'create') createTrip();
           if (action == 'edit') createTrip(edit: true);
           if (action == 'join') joinTrip();
+          if (action == 'memories') openMemories(context, store);
         },
         itemBuilder: (_) => [
+          const PopupMenuItem(value: 'memories', child: Text('My memories')),
           PopupMenuItem(
             value: 'create',
             enabled: !store.offline,
@@ -793,6 +796,22 @@ class _CompanionScreenState extends State<CompanionScreen>
           ),
         ),
         const SizedBox(height: 18),
+        Card(
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 20,
+              vertical: 14,
+            ),
+            leading: const Icon(Icons.portrait_outlined, size: 32),
+            title: const Text('People I met'),
+            subtitle: const Text(
+              'A face, a name, a little story. Private by default.',
+            ),
+            trailing: const Icon(Icons.arrow_forward),
+            onTap: () => openMemories(context, store, trip: t),
+          ),
+        ),
+        const SizedBox(height: 12),
         liveMapCard(),
         Card(
           color: LayoverColors.wash,

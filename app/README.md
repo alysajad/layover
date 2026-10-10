@@ -228,3 +228,48 @@ Date fields use native Material calendars and time pickers, including trip
 setup, bookings, reminders, itinerary entries, pot deadlines, expense dates,
 date poll options, and explorer start/end times. Times display locally and are
 stored in UTC where the existing API expects timestamps.
+
+## People I met
+
+Apply `supabase/migrations/202610110001_trip_memories.sql` before enabling cloud
+backup and sharing. This migration adds a separate **private** `trip-memories`
+bucket, owner-only metadata commands, and membership-aware read policies. It does
+not change the existing group attachment bucket.
+
+Open **Overview → People I met → Take a photo** in Android. The embedded camera
+supports front/back switching and retakes. Add an optional name, note, and a more
+specific place; the trip destination and capture time are attached automatically.
+No GPS is requested for memories. Photos are resized to a maximum 1600-pixel edge,
+normalized for orientation, and encoded as JPEG without EXIF/location metadata.
+No microphone or gallery access is needed.
+
+**Save privately** writes the photo to app-private storage before starting backup.
+The account-bound queue survives restarts and retries while the app is open or
+when it resumes. The app does not promise background uploads after it is closed.
+Status distinguishes a local save from a completed backup. Do not uninstall or
+clear app data before pending photos have backed up. Web can view and manage
+backed-up memories; capture and durable offline saving are Android-only. Demo
+photos stay in the current session and never upload.
+
+Only the owner can edit, delete, share, or make a memory private. Sharing includes
+its photo, name, place, time, and note, and requires an online confirmation. Even
+organizers cannot read unshared memories. Photos are downloaded with the current
+session rather than reusable signed/public URLs. Other members' photos are not
+stored in the offline library. Revocation removes app access, but cannot retract
+screenshots or copies already made. Leaving/removal clears sharing on the server;
+rejoining never automatically restores it. **Trip actions → My memories** keeps
+owners' photos accessible after departure or archival. Existing memories remain
+editable by their owner; new captures and shares require an active trip.
+
+Offline deletions are queued, hidden locally, and finish when connected. The
+server first revokes visibility, then the app removes storage bytes; interrupted
+cleanup retries. Tombstones prevent old clients from reviving deleted memories.
+Private saves and sharing do not generate group activity or notifications.
+
+Validation: `flutter test test/memories_test.dart` covers metadata removal, offline
+restart, account isolation, interrupted responses, duplicate-safe uploads,
+nonblocking local saves, and mobile/desktop layouts. Run
+`NODE_PATH=<test-dependencies>/node_modules node supabase/tests/memories.cjs`
+with `@electric-sql/pglite` to test private metadata/storage, organizer isolation,
+owner-only changes, share/unshare, removal/rejoin, archives, and deletion. Camera
+permission, capture/retake, and background/resume also require an Android device.

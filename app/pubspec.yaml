@@ -47,6 +47,9 @@ dependencies:
   firebase_messaging: ^16.0.3
   mapbox_maps_flutter: ^3.0.0
   geolocator: ^14.1.1
+  camera: ^0.12.1
+  path_provider: ^2.1.6
+  image: ^4.11.0
 
 dev_dependencies:
   flutter_test:

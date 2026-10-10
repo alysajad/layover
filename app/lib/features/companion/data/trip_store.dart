@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/env.dart';
 import '../domain/models.dart';
 import 'payment_capture.dart';
+import '../../memories/data/memory_store.dart';
 
 const uuid = Uuid();
 
@@ -19,8 +20,11 @@ class TripStore extends ChangeNotifier {
     this.syncInterval = const Duration(seconds: 5),
   }) {
     payments.addListener(_notify);
+    memories = MemoryStore(client: client, persistence: persistence);
+    memories.addListener(_notify);
   }
   final PaymentCapture payments = PaymentCapture();
+  late final MemoryStore memories;
   final Duration syncInterval;
   final SupabaseClient? client;
   final bool persistence;
@@ -91,6 +95,7 @@ class TripStore extends ChangeNotifier {
 
   void _clearAccount() {
     unawaited(payments.bindAccount(''));
+    unawaited(memories.bind(''));
     _epoch++;
     _refreshTimer?.cancel();
     _refreshFuture = null;
@@ -124,6 +129,7 @@ class TripStore extends ChangeNotifier {
 
   void setForeground(bool value) {
     _foreground = value;
+    memories.setForeground(value);
     if (!value) {
       _refreshTimer?.cancel();
     } else {
@@ -221,6 +227,7 @@ class TripStore extends ChangeNotifier {
 
   void _loadDrafts() {
     unawaited(payments.bindAccount(userId));
+    unawaited(memories.bind(userId, isDemo: demo));
     try {
       drafts = rows(jsonDecode(_prefs?.getString(_draftKey) ?? '[]'));
     } catch (_) {
@@ -486,6 +493,7 @@ class TripStore extends ChangeNotifier {
     _auth?.cancel();
     _refreshTimer?.cancel();
     payments.dispose();
+    memories.dispose();
     super.dispose();
   }
 
