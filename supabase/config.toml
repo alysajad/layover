@@ -1,0 +1,3 @@
+[functions.trip-reminders]
+# The scheduler authenticates with x-reminder-secret; never expose it in Flutter.
+verify_jwt = false
