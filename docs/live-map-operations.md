@@ -3,7 +3,8 @@
 ## Deploy
 
 Apply `0001_init.sql`, `0002_companion.sql`, then `0003_live_map.sql` to a development
-Supabase project. Keep the existing email OTP and trip membership configuration.
+Supabase project. Apply `0007_live_trails.sql` after the intervening migrations
+before shipping the updated live map. Keep the existing email OTP and trip membership configuration.
 Live Map uses the same client and auth session. No public invitation token grants
 map access: `?live_session=<uuid>` identifies a session and the server checks the
 signed-in account's invitation or joined membership. Web sharing includes that
@@ -64,7 +65,11 @@ positions stale after 15 seconds. Cleanup deletes expired positions and removes
 destinations at session expiry. Stop, pause, leave, removal, and end delete
 positions in the command transaction. Session end removes the destination too.
 Cleanup removes lifecycle events and command fingerprints after 30 days and
-purges sessions 30 days after expiry. It stores no coordinate trail.
+purges sessions 30 days after expiry. Trails cascade from `live_locations`, so
+the same deletion paths remove all recent points. The new table is RPC-only
+with RLS and no direct client grants. Each consenting publisher has at most 180
+points from the last 15 minutes; publishing prunes older points and snapshots
+exclude them immediately. Stale or inaccessible publishers expose no trail.
 
 ## Access and publication contract
 
@@ -82,8 +87,9 @@ purges sessions 30 days after expiry. It stores no coordinate trail.
 - `live_map_cleanup()` permits only service-role/database-owner execution.
 
 Each command and publication locks its session. A new consent generation
-invalidates earlier requests. Joining grants no consent; use `live-map-v1` in
-an explicit consent command. A 30-second lease starts with consent and renews
+invalidates earlier requests. Joining grants no consent; use `live-map-v2` in
+an explicit consent command after disclosing the recent path. Older `live-map-v1`
+clients can share their latest point, but never opt into a trail. A 30-second lease starts with consent and renews
 only on accepted fixes. An expired lease requires a new explicit consent.
 Session duration defaults to two hours, accepts one through eight hours, and
 cannot extend. Only the organizer starts, invites, removes, cancels, and ends.
@@ -102,7 +108,11 @@ Publication rejects non-finite/out-of-range coordinates, accuracy outside
 and implausible jumps. Fixes may be at most 30 seconds old or 10 seconds ahead;
 server receive time determines visibility. Jump tolerance allows 100 m/s plus
 the two fixes' reported accuracy. Accuracy worse than 100 metres remains visible
-with an approximate-location label. Distances are straight lines, without ETA.
+with an approximate-location label. Trails break at accuracy worse than 100 m,
+gaps over 20 seconds, or implausible jumps. Compact colored dots interpolate
+between fresh snapshots; a pin marks the meeting point. Marker symbol layers
+sit above the 3D buildings. Trails represent received GPS fixes, not navigation
+or a road-snapped route. Distances are straight lines, without ETA.
 
 ## Retention release requirement
 
@@ -137,6 +147,7 @@ flutter test
 flutter build web --release
 flutter build apk --debug
 NODE_PATH=/tmp/layover-check/node_modules node ../supabase/tests/live_map.cjs
+NODE_PATH=/tmp/layover-check/node_modules node ../supabase/tests/live_trails.cjs
 NODE_PATH=/tmp/layover-check/node_modules node ../supabase/tests/companion.cjs
 NODE_PATH=/tmp/layover-check/node_modules node ../supabase/tests/reminders.cjs
 NODE_PATH=/tmp/layover-check/node_modules node tool/live_map_two_clients.cjs

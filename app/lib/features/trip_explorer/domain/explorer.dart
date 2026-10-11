@@ -588,3 +588,46 @@ Future<List<Json>> generateItineraries(
   }
   return result;
 }
+
+// Shortlist known affordable stops first, reserving existing allowances and caps.
+// Unpriced stops remain explicitly incomplete in itinerary comparisons.
+List<String> suggestStops(
+  Json settings,
+  List<Json> places,
+  List<Json> allowances,
+) {
+  final pool = places
+      .where((p) => !['transport', 'services'].contains(p['kind']))
+      .toList();
+  int upper(Json p) => (p['cost']['high_minor'] as int?) ?? 9007199254740991;
+  pool.sort((a, b) {
+    final price = upper(a).compareTo(upper(b));
+    return price != 0
+        ? price
+        : metres(
+            coordinate(settings['origin']),
+            coordinate(a['point']),
+          ).compareTo(
+            metres(coordinate(settings['origin']), coordinate(b['point'])),
+          );
+  });
+  final selected = <String>[];
+  final costs = List<Json>.from(allowances);
+  for (final p in pool) {
+    final cost = Map<String, dynamic>.from(p['cost']);
+    final total = totalCosts(
+      [...costs, cost],
+      settings['group_size'],
+      settings['currency'],
+    );
+    final state = budgetState(total, settings);
+    if (state != 'Within budget' && state != 'Incomplete estimate') continue;
+    if (cost['high_minor'] == null && total.high >= settings['budget_minor']) {
+      continue;
+    }
+    selected.add(p['id'] as String);
+    costs.add(cost);
+    if (selected.length == 3) break;
+  }
+  return selected;
+}

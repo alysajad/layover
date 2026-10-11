@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../app/theme.dart';
@@ -24,9 +26,19 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
   late Json settings;
   List<Json> places = [], allowances = [], itineraries = [], versions = [];
   String? error, message, parentId, saveId;
-  String category = 'all';
+  String? versionsError, locationMessage;
+  String category = 'all', drawMode = 'pan';
+  final areaSearch = TextEditingController();
+  List<Json> searchResults = [];
+  List<double>? mapFocus;
+  Json? previousZone;
+  List<double>? previousOrigin;
+  int focusRevision = 0;
+  int areaRevision = 0;
   int page = 0, selectedCandidate = 0;
-  bool busy = false, dirty = true;
+  bool busy = false, dirty = true, areaChosen = false;
+  bool loadingVersions = false, locating = false;
+  bool locationServiceOff = false, locationPermissionBlocked = false;
   final title = TextEditingController(text: 'A day to explore');
   @override
   void initState() {
@@ -37,7 +49,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     final start = DateTime(date.year, date.month, date.day, 9);
     final origin = widget.trip.demo
         ? <double>[73.8278, 15.4909]
-        : <double>[0, 20];
+        : <double>[78.9629, 20.5937];
     settings = {
       'currency': 'INR',
       'budget_minor': 1000000,
@@ -54,13 +66,31 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
       'modes': ['walk', 'drive'],
       'keep_order': false,
     };
+    areaChosen = repository.demo;
+    areaSearch.text = widget.trip.trip?.destination ?? '';
     if (!repository.editable) page = 3;
     widget.trip.addListener(tripChanged);
-    unawaited(
-      run(() async {
-        versions = await repository.versions();
-      }),
-    );
+    // Saved-plan availability must never prevent the local map from opening.
+    unawaited(loadVersions());
+    if (!repository.demo && repository.editable) unawaited(locateArea());
+  }
+
+  Future<void> loadVersions() async {
+    if (loadingVersions || !mounted) return;
+    setState(() {
+      loadingVersions = true;
+      versionsError = null;
+    });
+    try {
+      final result = await repository.versions();
+      if (mounted && repository.accessible) setState(() => versions = result);
+    } catch (e) {
+      if (mounted && repository.accessible) {
+        setState(() => versionsError = explorerErrorMessage(e));
+      }
+    } finally {
+      if (mounted) setState(() => loadingVersions = false);
+    }
   }
 
   void tripChanged() {
@@ -79,6 +109,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     repository.close();
     widget.trip.removeListener(tripChanged);
     title.dispose();
+    areaSearch.dispose();
     super.dispose();
   }
 
@@ -92,7 +123,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     try {
       await action();
     } catch (e) {
-      if (mounted) error = e is FormatException ? e.message : 'The request failed. Your saved versions are unchanged. Retry when connected.';
+      if (mounted) error = explorerErrorMessage(e);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -130,15 +161,28 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     );
     if (!mounted || !repository.editable) return;
     final old = {for (final p in places) p['id']: p};
+    final selected = places
+        .where((p) => p['selection_type'] != 'excluded')
+        .toList();
     places = [
-      for (final p in result) old[p['id']] ?? p,
-      for (final p in places)
-        if (p['selection_type'] != 'excluded' &&
-            !result.any((r) => r['id'] == p['id']))
-          p,
-    ];
+      ...selected,
+      for (final p in result)
+        if (!selected.any((r) => r['id'] == p['id'])) old[p['id']] ?? p,
+    ].take(40).toList();
     changed();
     page = 1;
+    if (selected.isEmpty && old.isEmpty && result.isNotEmpty) {
+      final suggestions = suggestStops(settings, places, allowances);
+      for (final p in places) {
+        if (suggestions.contains(p['id'])) p['selection_type'] = 'optional';
+      }
+      message = suggestions.isEmpty
+          ? null
+          : 'Suggested ${suggestions.length} stops for your budget. Verify unknown prices before confirming.';
+    }
+    if (repository.discoveryWarning != null) {
+      message = repository.discoveryWarning;
+    }
     if (result.isEmpty) {
       message = 'No places found. Try a larger area or another category.';
     }
@@ -211,13 +255,19 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     parentId = result['id'];
     saveId = null;
     dirty = false;
-    versions = await repository.versions();
+    await loadVersions();
     message = 'Saved version ${result['version']}.';
   });
   void open(Json version) {
     final s = copyJson(Map<String, dynamic>.from(version['snapshot']));
     setState(() {
+      areaRevision++;
+      locationMessage = null;
       settings = Map<String, dynamic>.from(s['settings']);
+      areaChosen = true;
+      previousZone = null;
+      mapFocus = coordinate(settings['origin']);
+      focusRevision++;
       places = rows(s['places']);
       allowances = rows(s['allowances']);
       itineraries = rows(s['itineraries']);
@@ -245,16 +295,45 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
-              controller: dwell,
-              decoration: const InputDecoration(
-                labelText: 'Visit minutes (0–480)',
-              ),
+            DropdownButtonFormField<int>(
+              initialValue: int.parse(dwell.text),
+              decoration: const InputDecoration(labelText: 'Visit time'),
+              items:
+                  ({
+                        0,
+                        5,
+                        15,
+                        30,
+                        45,
+                        60,
+                        90,
+                        120,
+                        180,
+                        240,
+                        480,
+                        int.parse(dwell.text),
+                      }.toList()..sort())
+                      .map(
+                        (v) => DropdownMenuItem(
+                          value: v,
+                          child: Text('$v minutes'),
+                        ),
+                      )
+                      .toList(),
+              onChanged: (v) => dwell.text = '$v',
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: priority,
-              decoration: const InputDecoration(labelText: 'Priority (1–5)'),
+            DropdownButtonFormField<int>(
+              initialValue: int.parse(priority.text),
+              decoration: const InputDecoration(labelText: 'Priority'),
+              items: [
+                for (var v = 1; v <= 5; v++)
+                  DropdownMenuItem(
+                    value: v,
+                    child: Text('$v${v == 5 ? ' · Highest' : ''}'),
+                  ),
+              ],
+              onChanged: (v) => priority.text = '$v',
             ),
           ],
         ),
@@ -364,6 +443,16 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
                             'Shared plans for your trip. The organizer can edit and share versions.',
                           ),
                         if (error != null) notice(error!, warning: true),
+                        if (versionsError != null) ...[
+                          notice(versionsError!, warning: true),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton(
+                              onPressed: loadingVersions ? null : loadVersions,
+                              child: const Text('Retry saved plans'),
+                            ),
+                          ),
+                        ],
                         if (message != null) notice(message!),
                         Wrap(
                           spacing: 8,
@@ -405,7 +494,9 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
                             runSpacing: 8,
                             children: [
                               FilledButton.icon(
-                                onPressed: editable && dirty ? save : null,
+                                onPressed: editable && dirty && areaChosen
+                                    ? save
+                                    : null,
                                 icon: const Icon(Icons.save_outlined),
                                 label: const Text('Save new version'),
                               ),
@@ -416,8 +507,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
                                   onPressed: editable
                                       ? () => run(() async {
                                           await repository.share(parentId!);
-                                          versions = await repository
-                                              .versions();
+                                          await loadVersions();
                                           message = 'Shared with current trip members.';
                                         })
                                       : null,
@@ -463,169 +553,372 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     );
   }
 
+  void selectZone(Json zone, {List<double>? focus, String? name}) {
+    setState(() {
+      areaRevision++;
+      previousZone = areaChosen
+          ? copyJson(Map<String, dynamic>.from(settings['zone']))
+          : null;
+      previousOrigin = areaChosen ? coordinate(settings['origin']) : null;
+      areaChosen = true;
+      locationMessage = null;
+      settings['zone'] = zone;
+      settings['origin'] = zone['type'] == 'circle'
+          ? zone['center']
+          : (zone['vertices'] as List).first;
+      if (focus != null) {
+        mapFocus = focus;
+        focusRevision++;
+      }
+      if (name != null) areaSearch.text = name;
+      drawMode = 'pan';
+      error = null;
+      places = [];
+      changed();
+    });
+  }
+
+  Future<void> searchArea() => run(() async {
+    searchResults = await repository.search(areaSearch.text.trim());
+    if (searchResults.isEmpty) {
+      message = 'No areas found. Try a nearby town or landmark.';
+    }
+  });
+
+  Future<void> locateArea() async {
+    if (locating || !mounted || !repository.editable) return;
+    final revision = areaRevision;
+    setState(() {
+      locating = true;
+      locationMessage = null;
+      locationServiceOff = locationPermissionBlocked = false;
+    });
+    try {
+      List<double> point;
+      double? accuracy;
+      if (repository.demo) {
+        point = [73.8278, 15.4909];
+      } else {
+        if (!await Geolocator.isLocationServiceEnabled()) {
+          locationServiceOff = true;
+          throw const FormatException(
+            'Location is turned off. Enable it, then tap Use my location, or choose an area on the map.',
+          );
+        }
+        var permission = await Geolocator.checkPermission();
+        if (permission == LocationPermission.denied) {
+          permission = await Geolocator.requestPermission();
+        }
+        if (permission == LocationPermission.deniedForever) {
+          locationPermissionBlocked = true;
+          throw const FormatException(
+            'Allow location access in app settings, then tap Use my location. You can also choose an area on the map.',
+          );
+        }
+        if (![
+          LocationPermission.always,
+          LocationPermission.whileInUse,
+        ].contains(permission)) {
+          throw const FormatException(
+            'Location access was not granted. Tap Use my location to retry, or choose an area on the map.',
+          );
+        }
+        if (!mounted || !repository.editable || revision != areaRevision) {
+          return;
+        }
+        final fix = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 15),
+          ),
+        );
+        point = coordinate([fix.longitude, fix.latitude]);
+        accuracy = fix.accuracy;
+      }
+      // Do not replace a searched/drawn area or an opened plan with a late fix.
+      if (!mounted || !repository.editable || revision != areaRevision) return;
+      selectZone(
+        {'type': 'circle', 'center': point, 'radius_m': 1500},
+        focus: point,
+        name: repository.demo ? 'Demo area' : 'Near me',
+      );
+      locationMessage = accuracy != null && accuracy > 100
+          ? 'Using approximate location (±${accuracy.round()} m). Adjust the outline if needed.'
+          : 'Map centered on ${repository.demo ? 'the demo area' : 'your current location'}.';
+    } catch (e) {
+      if (mounted && repository.accessible && revision == areaRevision) {
+        locationMessage = e is FormatException
+            ? e.message
+            : e is TimeoutException
+            ? 'Your location took too long to arrive. Tap Use my location to retry, or choose an area on the map.'
+            : 'Could not get your current location. Check location access and try again, or choose an area on the map.';
+      }
+    } finally {
+      if (mounted) setState(() => locating = false);
+    }
+  }
+
   List<Widget> area() => [
-    heading('Set the boundaries for your day'),
+    heading('Draw your day'),
     Text(
       '${moneyText(settings['budget_minor'], settings['currency'])} group budget · ${settings['group_size']} travelers',
     ),
-    Text('${settings['start_at']} → ${settings['end_at']}'),
-    const SizedBox(height: 12),
+    Text(
+      '${DateFormat('d MMM · h:mm a').format(DateTime.parse(settings['start_at']).toLocal())} → ${DateFormat('d MMM · h:mm a').format(DateTime.parse(settings['end_at']).toLocal())}',
+    ),
     Align(
       alignment: Alignment.centerLeft,
-      child: FilledButton.tonal(
+      child: TextButton.icon(
         onPressed: editable ? configure : null,
-        child: const Text('Edit budget and area'),
+        icon: const Icon(Icons.tune),
+        label: const Text('Edit budget and time'),
       ),
     ),
     const SizedBox(height: 12),
+    TextField(
+      controller: areaSearch,
+      enabled: editable,
+      textInputAction: TextInputAction.search,
+      onChanged: (_) => areaRevision++,
+      onSubmitted: (_) => searchArea(),
+      decoration: InputDecoration(
+        labelText: 'Search town, neighborhood or landmark',
+        prefixIcon: const Icon(Icons.search),
+        suffixIcon: IconButton(
+          tooltip: 'Search area',
+          onPressed: editable ? searchArea : null,
+          icon: const Icon(Icons.arrow_forward),
+        ),
+      ),
+    ),
+    for (final result in searchResults)
+      ListTile(
+        leading: const Icon(Icons.place_outlined),
+        title: Text(result['name'] ?? 'Area'),
+        onTap: !editable
+            ? null
+            : () {
+                final point = coordinate(result['point']);
+                selectZone(
+                  {'type': 'circle', 'center': point, 'radius_m': 1500},
+                  focus: point,
+                  name: result['name'],
+                );
+                setState(searchResults.clear);
+              },
+      ),
+    Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        onPressed: editable && !locating ? locateArea : null,
+        icon: const Icon(Icons.my_location),
+        label: Text(locating ? 'Finding your location…' : 'Use my location'),
+      ),
+    ),
+    if (locating) const LinearProgressIndicator(),
+    if (locationMessage != null) notice(locationMessage!),
+    if (locationServiceOff || locationPermissionBlocked)
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          onPressed: () async {
+            if (locationServiceOff) {
+              await Geolocator.openLocationSettings();
+            } else {
+              await Geolocator.openAppSettings();
+            }
+          },
+          child: Text(
+            locationServiceOff ? 'Open location settings' : 'Open app settings',
+          ),
+        ),
+      ),
     Wrap(
       spacing: 8,
+      runSpacing: 4,
       children: [
-        for (final shape in ['circle', 'polygon'])
+        for (final mode in [
+          ('pan', 'Move map', Icons.pan_tool_outlined),
+          ('circle', 'Draw circle', Icons.circle_outlined),
+          ('freehand', 'Freehand', Icons.gesture),
+          ('start', 'Set start', Icons.flag_outlined),
+          ('finish', 'Set finish', Icons.outlined_flag),
+        ])
           ChoiceChip(
-            label: Text(shape == 'circle' ? 'Radius' : 'Polygon'),
-            selected: settings['zone']['type'] == shape,
+            avatar: Icon(mode.$3, size: 18),
+            label: Text(mode.$2),
+            selected: drawMode == mode.$1,
             onSelected: editable
                 ? (_) => setState(() {
-                    settings['zone'] = shape == 'circle'
-                        ? {
-                            'type': 'circle',
-                            'center': settings['origin'],
-                            'radius_m': 5000,
-                          }
-                        : {'type': 'polygon', 'vertices': <List<double>>[]};
-                    places = [];
-                    changed();
+                    areaRevision++;
+                    drawMode = mode.$1;
                   })
                 : null,
           ),
       ],
     ),
-    const SizedBox(height: 8),
-    Text(
-      settings['zone']['type'] == 'circle'
-          ? 'Tap to set the area center and starting point.'
-          : 'Tap 3–20 vertices around the area. Use Undo to correct the boundary.',
-    ),
-    const SizedBox(height: 8),
+    const SizedBox(height: 10),
+    Text(switch (drawMode) {
+      'circle' => 'Touch the center, then drag outwards to size your circle.',
+      'freehand' => 'Trace around the area with your finger. The outline closes when you lift.',
+      'start' => 'Tap where you want to start exploring.',
+      'finish' => 'Tap where you want to finish your day.',
+      _ => 'Move and zoom the map, then draw the area you want to explore.',
+    }),
+    const SizedBox(height: 10),
     SizedBox(
-      height: 320,
+      height: 360,
       child: ExplorerMap(
         zone: Map<String, dynamic>.from(settings['zone']),
         places: places,
         origin: coordinate(settings['origin']),
         demo: repository.demo,
+        destination: settings['destination'] == null
+            ? null
+            : coordinate(settings['destination']),
+        focus: mapFocus,
+        focusRevision: focusRevision,
+        initialZoom: areaChosen ? 13 : 4,
+        showSelection: areaChosen,
+        drawMode: editable ? drawMode : 'pan',
+        onZone: (zone) => selectZone(zone),
+        onError: (value) => setState(() => error = value),
         onPoint: !editable
             ? null
             : (point) => setState(() {
-                if (settings['zone']['type'] == 'circle') {
-                  settings['origin'] = point;
-                  settings['zone']['center'] = point;
-                } else {
-                  final vertices = settings['zone']['vertices'] as List;
-                  if (vertices.length < 20) vertices.add(point);
-                }
-                places = [];
+                areaRevision++;
+                settings[drawMode == 'finish' ? 'destination' : 'origin'] =
+                    point;
+                drawMode = 'pan';
                 changed();
               }),
       ),
     ),
-    if (settings['zone']['type'] == 'polygon')
-      Wrap(
-        spacing: 12,
-        children: [
+    Wrap(
+      spacing: 12,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text(
+          !areaChosen
+              ? 'Choose an area to begin'
+              : settings['zone']['type'] == 'circle'
+              ? '${((settings['zone']['radius_m'] as num) / 1000).toStringAsFixed(1)} km radius'
+              : 'Your drawn area · ${(settings['zone']['vertices'] as List).length} boundary points',
+        ),
+        TextButton(
+          onPressed: editable && previousZone != null
+              ? () => setState(() {
+                  settings['zone'] = previousZone!;
+                  settings['origin'] = previousOrigin!;
+                  previousZone = null;
+                  places = [];
+                  changed();
+                })
+              : null,
+          child: const Text('Undo area'),
+        ),
+        if (settings['destination'] != null)
           TextButton(
             onPressed: editable
                 ? () => setState(() {
-                    final v = settings['zone']['vertices'] as List;
-                    if (v.isNotEmpty) v.removeLast();
-                    places = [];
+                    settings['destination'] = null;
                     changed();
                   })
                 : null,
-            child: const Text('Undo vertex'),
+            child: const Text('Finish at last stop'),
           ),
-          TextButton(
-            onPressed: editable ? enterVertex : null,
-            child: const Text('Enter vertex coordinates'),
-          ),
-          Text('${(settings['zone']['vertices'] as List).length} vertices'),
+      ],
+    ),
+    if (settings['zone']['type'] == 'circle')
+      DropdownButtonFormField<int>(
+        key: ValueKey(settings['zone']['radius_m']),
+        isExpanded: true,
+        initialValue:
+            [
+              500,
+              1000,
+              1500,
+              3000,
+              5000,
+              10000,
+            ].contains(settings['zone']['radius_m'])
+            ? (settings['zone']['radius_m'] as num).toInt()
+            : 0,
+        decoration: const InputDecoration(labelText: 'Nearby radius'),
+        items: [
+          const DropdownMenuItem(value: 0, child: Text('Custom drawn circle')),
+          for (final radius in [500, 1000, 1500, 3000, 5000, 10000])
+            DropdownMenuItem(
+              value: radius,
+              child: Text(radius < 1000 ? '$radius m' : '${radius / 1000} km'),
+            ),
         ],
+        onChanged: editable && areaChosen
+            ? (v) {
+                if (v != null && v > 0) {
+                  selectZone({
+                    ...Map<String, dynamic>.from(settings['zone']),
+                    'radius_m': v,
+                  });
+                }
+              }
+            : null,
       ),
-    const Text(
-      'The zone limits place discovery. Routes may leave the zone. No live-location access is needed.',
+    const SizedBox(height: 12),
+    Text(
+      areaChosen
+          ? 'Discoveries stay inside your outline. Travel routes may go outside it.'
+          : 'Search an area, use your location or draw a boundary to begin.',
     ),
     const SizedBox(height: 16),
     DropdownButtonFormField<String>(
       initialValue: category,
       decoration: const InputDecoration(labelText: 'Discover'),
       items: [
-        'all',
-        'culture',
-        'nature',
-        'food',
-      ].map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+        for (final c in {
+          'all': 'Everything in this area',
+          'culture': 'Sights & local highlights',
+          'nature': 'Parks & outdoors',
+          'food': 'Food courts, cafés & restaurants',
+          'transport': 'Bus stops & transport',
+          'services': 'Useful services',
+        }.entries)
+          DropdownMenuItem(value: c.key, child: Text(c.value)),
+      ],
       onChanged: editable ? (v) => setState(() => category = v!) : null,
+      isExpanded: true,
     ),
     const SizedBox(height: 12),
-    FilledButton(
-      onPressed: editable ? discover : null,
-      child: const Text('Find places'),
+    FilledButton.icon(
+      onPressed: editable && areaChosen ? discover : null,
+      icon: const Icon(Icons.travel_explore),
+      label: const Text('Find places'),
     ),
     ...allowanceWidgets(),
   ];
-  Future<void> enterVertex() async {
-    final lon = TextEditingController(), lat = TextEditingController();
-    final p = await showDialog<List<double>>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Polygon vertex'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: lon,
-              decoration: const InputDecoration(labelText: 'Longitude'),
-            ),
-            TextField(
-              controller: lat,
-              decoration: const InputDecoration(labelText: 'Latitude'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              try {
-                Navigator.pop(
-                  context,
-                  coordinate([double.parse(lon.text), double.parse(lat.text)]),
-                );
-              } catch (_) {
-                /* Keep invalid input editable. */
-              }
-            },
-            child: const Text('Add'),
-          ),
-        ],
-      ),
-    );
-    if (p != null && mounted && editable) {
-      setState(() {
-        final v = settings['zone']['vertices'] as List;
-        if (v.length < 20) v.add(p);
-        places = [];
-        changed();
-      });
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 250));
-    lon.dispose();
-    lat.dispose();
+
+  void suggest() {
+    final ids = suggestStops(settings, places, allowances);
+    setState(() {
+      for (final p in places) {
+        p['selection_type'] = ids.contains(p['id']) ? 'optional' : 'excluded';
+      }
+      changed();
+      message = ids.isEmpty
+          ? 'No stops fit the known costs and allowances. Adjust your budget or costs.'
+          : 'Suggested ${ids.length} stops, prioritizing known low costs. Add missing prices and travel costs before confirming the budget.';
+    });
   }
+
+  Future<void> loadHighlight(Json place) => run(() async {
+    final details = await repository.highlight(place['wikipedia']);
+    if (!mounted || !repository.editable) return;
+    place['highlight'] = details;
+    changed(clearCandidates: false);
+    if (details['description'] == null) {
+      message = 'No summary is available for this place. Open its source for details.';
+    }
+  });
 
   List<Widget> allowanceWidgets() => [
     heading('Allowances and contingency'),
@@ -660,7 +953,22 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
     ),
   ];
   List<Widget> selection() => [
-    heading('Choose the places worth stopping for'),
+    heading('Inside your area'),
+    Text(
+      '${moneyText(settings['budget_minor'] ~/ settings['group_size'], settings['currency'])} per person · ${moneyText(settings['budget_minor'], settings['currency'])} for the group',
+    ),
+    const Text(
+      'Entry fees, meals and fares are shown when available. Unknown prices still need checking.',
+    ),
+    if (places.isNotEmpty)
+      Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          onPressed: editable ? suggest : null,
+          icon: const Icon(Icons.auto_awesome_outlined),
+          label: const Text('Suggest budget stops'),
+        ),
+      ),
     if (places.isEmpty)
       notice('Find places from Budget & area to start your shortlist.'),
     for (var i = 0; i < places.length; i++) placeCard(places[i], i),
@@ -693,10 +1001,45 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
         children: [
           Text(p['name'], style: Theme.of(context).textTheme.titleMedium),
           Text(
-            '${p['category']} · ${p['dwell_minutes']} min · priority ${p['priority']}',
+            "${(p['category'] as String).split('.').last.replaceAll('_', ' ')} · ${p['dwell_minutes']} min · priority ${p['priority']}",
+          ),
+          if (p['description'] != null) Text(p['description']),
+          if (p['cuisine'] != null) Text('On the menu · ${p['cuisine']}'),
+          if (p['operator'] != null || p['network'] != null)
+            Text('Service · ${p['operator'] ?? p['network']}'),
+          if (p['address'] != null)
+            Text(p['address'], style: Theme.of(context).textTheme.bodySmall),
+          if (p['opening_hours'] != null)
+            Text('Listed hours · ${p['opening_hours']}'),
+          if (p['kind'] == 'transport')
+            const Text(
+              'Stop listed in this area. Check the operator for routes, schedules and fares.',
+            ),
+          if (p['highlight']?['description'] != null)
+            Text(p['highlight']['description']),
+          Wrap(
+            spacing: 8,
+            children: [
+              if (p['wikipedia'] != null && p['highlight'] == null)
+                TextButton(
+                  onPressed: editable ? () => loadHighlight(p) : null,
+                  child: const Text('What’s special here?'),
+                ),
+              for (final link in [
+                ('Place source', p['source_url']),
+                ('Website / menu', p['website']),
+                ('Wikipedia · CC BY-SA', p['highlight']?['source_url']),
+              ])
+                if (link.$2 is String &&
+                    ['https', 'http'].contains(Uri.tryParse(link.$2)?.scheme))
+                  TextButton(
+                    onPressed: () => launchUrl(Uri.parse(link.$2)),
+                    child: Text(link.$1),
+                  ),
+            ],
           ),
           Text(
-            '${p['source']} · checked ${p['source_checked_at']}',
+            '${p['source']} · checked ${DateFormat('d MMM, h:mm a').format(DateTime.parse(p['source_checked_at']).toLocal())}',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           Wrap(
@@ -729,7 +1072,13 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
                         (v) => p['cost'] = v,
                       )
                     : null,
-                child: const Text('Admission cost'),
+                child: Text(
+                  p['kind'] == 'food'
+                      ? 'Meal budget'
+                      : p['kind'] == 'transport'
+                      ? 'Fare cost'
+                      : 'Admission cost',
+                ),
               ),
               IconButton(
                 tooltip: 'Move earlier',
@@ -990,15 +1339,12 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
         ),
       ),
     TextButton.icon(
-      onPressed: busy
-          ? null
-          : () => run(() async {
-              versions = await repository.versions();
-            }),
+      onPressed: busy || loadingVersions ? null : loadVersions,
       icon: const Icon(Icons.refresh),
       label: const Text('Refresh saved plans'),
     ),
-    if (versions.isEmpty)
+    if (loadingVersions) const LinearProgressIndicator(),
+    if (versions.isEmpty && versionsError == null && !loadingVersions)
       notice(
         'No saved plans yet. Organizers can save a selection or generated itinerary.',
       ),

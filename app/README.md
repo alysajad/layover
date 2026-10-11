@@ -48,7 +48,7 @@ to localhost and serves the current release build; rebuild after code changes.
 ## Connect Supabase
 
 1. Create a development Supabase project. Apply
-   `supabase/migrations/0001_init.sql` through `0005_payment_expenses.sql` in numeric order.
+   `supabase/migrations/0001_init.sql` through `0006_invite_random_bytes.sql` in numeric order.
    These migrations create a private `trip-files` storage bucket as well.
    Apply `0004_trip_explorer.sql` and follow [Explorer deployment](../docs/trip-explorer-operations.md)
    to enable connected budget exploration.
@@ -63,6 +63,11 @@ to localhost and serves the current release build; rebuild after code changes.
 Use a development database first. The second migration extends the first and
 does not delete existing financial records. Legacy provider-payment rows stay
 separate from manual transfers. These files are migrations, not rerunnable seeds.
+
+If **Add traveler** reports `function gen_random_bytes(integer) does not exist`,
+apply `0006_invite_random_bytes.sql` after the previous migrations in the Supabase
+SQL editor. It lets the invite function find pgcrypto in Supabase's `extensions`
+schema. Tap **Add traveler** again afterward; no app rebuild is needed.
 
 ## Push and Scheduled Reminders
 
@@ -273,3 +278,27 @@ nonblocking local saves, and mobile/desktop layouts. Run
 with `@electric-sql/pglite` to test private metadata/storage, organizer isolation,
 owner-only changes, share/unshare, removal/rejoin, archives, and deletion. Camera
 permission, capture/retake, and background/resume also require an Android device.
+
+
+## Funded trip planning
+
+Organizers can open **Plan from the shared pot** from Overview, Plan or Money.
+Confirmed contributions trigger private itinerary options; the leader can publish
+one option to the trip's itinerary, booking checks, tasks, packing and Group
+announcement. Reservations remain manual, through the provided links. Apply the
+planner migration, configure provider secrets and schedule the worker using
+[Planner operations](../docs/trip-planner-operations.md).
+
+## Drawn areas and recent live paths
+
+The explorer now supports place-name search, a one-time location fix, circle and
+freehand drawing, and map-selected start/finish points. Discovery includes food,
+local highlights, bus stops and services, with online source links and available
+cuisine/hours/operator details. Budget suggestions reserve allowances and keep
+unpublished prices marked unknown. See [Explorer operations](../docs/trip-explorer-operations.md).
+
+Redeploy `supabase/functions/trip-explorer` with the existing `GEOAPIFY_API_KEY`.
+Apply `supabase/migrations/0007_live_trails.sql` before shipping this client:
+Live Map uses explicit `live-map-v2` consent for a recent path (up to 15 minutes /
+180 fixes), small moving dots and a meeting-point pin. Stop/pause/end and location
+expiry remove the associated trail. See [Live Map operations](../docs/live-map-operations.md).

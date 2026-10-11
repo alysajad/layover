@@ -17,6 +17,7 @@ import 'payment_inbox.dart';
 import '../../memories/presentation/memories_screen.dart';
 import '../../live_map/presentation/live_map_screen.dart';
 import '../../trip_explorer/presentation/explorer_screen.dart';
+import '../../trip_planner/planner_screen.dart';
 
 class CompanionScreen extends StatefulWidget {
   const CompanionScreen({super.key, required this.store});
@@ -843,6 +844,7 @@ class _CompanionScreenState extends State<CompanionScreen>
             ),
           ),
         ),
+        PlannerCard(store: store),
         for (final a in store.snapshot.entries(t.id, 'announcement'))
           entryTile(a),
         section(
@@ -911,6 +913,7 @@ class _CompanionScreenState extends State<CompanionScreen>
             ],
           ),
         ),
+        PlannerCard(store: store),
         Wrap(
           spacing: 8,
           children: [
@@ -936,8 +939,8 @@ class _CompanionScreenState extends State<CompanionScreen>
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         PageIntro(
-          title: 'All booked.',
-          subtitle: 'Your stays, tickets and reservations, in one place.',
+          title: 'Bookings',
+          subtitle: 'Booking plans and confirmed reservations, in one place.',
           action: IconButton(
             tooltip: 'Add booking',
             onPressed: canEdit ? () => addEntry('booking') : null,
@@ -1096,7 +1099,14 @@ class _CompanionScreenState extends State<CompanionScreen>
                 ),
               if (e.kind == 'booking') ...[
                 const SizedBox(height: 8),
-                const Text('Group booking record'),
+                Text(
+                  e.text('booking_status') == 'planned' &&
+                          e.text('reference').isEmpty
+                      ? 'To book · reservation not confirmed'
+                      : e.text('reference').isNotEmpty
+                      ? 'Confirmation recorded'
+                      : 'Group booking record',
+                ),
                 for (final field in {
                   'reference': 'Reference',
                   'cancellation': 'Cancellation',
@@ -1109,6 +1119,12 @@ class _CompanionScreenState extends State<CompanionScreen>
                       child: Text('${field.value}: ${e.text(field.key)}'),
                     ),
               ],
+              if (e.text('directions_url').isNotEmpty)
+                TextButton.icon(
+                  onPressed: () => openLink(e.text('directions_url')),
+                  icon: const Icon(Icons.directions_outlined),
+                  label: const Text('Directions'),
+                ),
               if (e.text('assigned_to').isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
@@ -1339,6 +1355,7 @@ class _CompanionScreenState extends State<CompanionScreen>
         ],
       ),
       const SizedBox(height: 20),
+      if (moneyView == 'Pot') PlannerCard(store: store),
       if (store.offline && moneyView == 'Expenses')
         PaymentInbox(
           key: ValueKey('${store.userId}:${store.selectedTrip}'),
@@ -2035,6 +2052,9 @@ class _CompanionScreenState extends State<CompanionScreen>
               ),
           ],
         ),
+        section('Announcements'),
+        for (final e in store.snapshot.entries(t.id, 'announcement').reversed)
+          entryTile(e),
         section(
           'Packing and tasks',
           action: IconButton(

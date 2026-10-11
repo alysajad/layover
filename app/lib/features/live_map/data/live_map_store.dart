@@ -128,6 +128,20 @@ class LiveMapStore extends ChangeNotifier {
         sessions = rows(data['sessions']);
         contacts = rows(data['contacts']);
       } else {
+        if (simulated) {
+          final current = rows(data['locations']);
+          data['trails'] = [
+            ...?snapshot?.trails.where(
+              (p) =>
+                  current.any((l) => l['user_id'] == p['user_id']) &&
+                  DateTime.parse(data['server_time'])
+                          .difference(DateTime.parse(p['received_at']))
+                          .inMinutes <
+                      15,
+            ),
+            ...current,
+          ];
+        }
         snapshot = LiveSnapshot(data);
         // Conservatively count the entire round trip toward server freshness.
         _snapshotLag = requestAge.elapsed;
@@ -200,7 +214,7 @@ class LiveMapStore extends ChangeNotifier {
       if (!_valid(epoch) || shareEpoch != _shareEpoch) return;
       final result = await api.command('consent', {
         'session_id': id,
-        'consent_version': 'live-map-v1',
+        'consent_version': 'live-map-v2',
       });
       if (!_valid(epoch) || shareEpoch != _shareEpoch) {
         if (validAccount) await _remoteStop(id, 'stop');

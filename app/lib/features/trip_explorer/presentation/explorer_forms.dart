@@ -9,36 +9,15 @@ Future<Json?> settingsForm(
   required bool currencyLocked,
 }) async {
   final controllers = <String, TextEditingController>{
-    for (final key in [
-      'budget',
-      'group',
-      'start',
-      'end',
-      'lon',
-      'lat',
-      'end_lon',
-      'end_lat',
-      'radius',
-      ...categories,
-    ])
+    for (final key in ['budget', 'group', 'start', 'end', ...categories])
       key: TextEditingController(),
   };
   var currency = current['currency'] as String;
   var modes = List<String>.from(current['modes']);
-  final zone = Map<String, dynamic>.from(current['zone']);
   controllers['budget']!.text = amountText(current['budget_minor'], currency);
   controllers['group']!.text = '${current['group_size']}';
   controllers['start']!.text = current['start_at'];
   controllers['end']!.text = current['end_at'];
-  controllers['lon']!.text = '${current['origin'][0]}';
-  controllers['lat']!.text = '${current['origin'][1]}';
-  controllers['end_lon']!.text = current['destination'] == null
-      ? ''
-      : '${current['destination'][0]}';
-  controllers['end_lat']!.text = current['destination'] == null
-      ? ''
-      : '${current['destination'][1]}';
-  controllers['radius']!.text = '${zone['radius_m'] ?? 5000}';
   for (final category in categories) {
     final cap = current['caps'][category];
     controllers[category]!.text = cap == null ? '' : amountText(cap, currency);
@@ -48,10 +27,11 @@ Future<Json?> settingsForm(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) => AlertDialog(
-        title: const Text('Budget and area'),
+        title: const Text('Budget and time'),
         content: SizedBox(
           width: 480,
           child: SingleChildScrollView(
+            padding: const EdgeInsets.only(top: 8),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -72,12 +52,6 @@ Future<Json?> settingsForm(
                   ('group', 'Travelers'),
                   ('start', 'Start date and time'),
                   ('end', 'End date and time'),
-                  ('lon', 'Start longitude'),
-                  ('lat', 'Start latitude'),
-                  ('end_lon', 'End longitude (optional)'),
-                  ('end_lat', 'End latitude (optional)'),
-                  if (zone['type'] == 'circle')
-                    ('radius', 'Discovery radius (metres)'),
                 ])
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
@@ -121,9 +95,7 @@ Future<Json?> settingsForm(
                           ),
                   ),
                 const SizedBox(height: 12),
-                const Text(
-                  'For a radius, the start point is the area center. Polygon vertices are selected on the map.',
-                ),
+                const Text('Choose your area and starting point on the map.'),
                 Wrap(
                   spacing: 8,
                   children: [
@@ -165,10 +137,6 @@ Future<Json?> settingsForm(
           FilledButton(
             onPressed: () {
               try {
-                final origin = [
-                  double.parse(controllers['lon']!.text),
-                  double.parse(controllers['lat']!.text),
-                ];
                 final result = <String, dynamic>{
                   ...current,
                   'currency': currency,
@@ -183,22 +151,6 @@ Future<Json?> settingsForm(
                   'end_at': DateTime.parse(controllers['end']!.text)
                       .toUtc()
                       .toIso8601String(),
-                  'origin': origin,
-                  'destination':
-                      controllers['end_lon']!.text.isEmpty &&
-                          controllers['end_lat']!.text.isEmpty
-                      ? null
-                      : [
-                          double.parse(controllers['end_lon']!.text),
-                          double.parse(controllers['end_lat']!.text),
-                        ],
-                  'zone': zone['type'] == 'circle'
-                      ? {
-                          'type': 'circle',
-                          'center': origin,
-                          'radius_m': double.parse(controllers['radius']!.text),
-                        }
-                      : zone,
                   'modes': modes.toSet().toList(),
                   'caps': {
                     for (final c in categories)

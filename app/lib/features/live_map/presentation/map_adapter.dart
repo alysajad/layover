@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 
 import '../../../core/env.dart';
 import '../domain/models.dart';
+import '../domain/map_features.dart';
 import '../data/campus_simulation.dart';
 
 // Only this file knows about Mapbox. Sources/layers work on both Android and web.
@@ -16,11 +18,14 @@ class GroupMap extends StatefulWidget {
     required this.names,
     required this.onPoint,
     this.destination,
+    this.trails = const [],
+    this.serverTime,
     this.focus,
     this.demo = false,
     this.campus = false,
   });
-  final List<Json> locations;
+  final List<Json> locations, trails;
+  final DateTime? serverTime;
   final Map<String, String> names;
   final Json? destination, focus;
   final void Function(double latitude, double longitude) onPoint;
@@ -40,11 +45,14 @@ class _GroupMapState extends State<GroupMap> {
   bool _centered = false;
   late bool _startIn3D = widget.campus;
   bool _threeDFailed = false;
-  Timer? _timeout;
+  Timer? _timeout, _motion;
+  List<Json> _displayed = [];
+  bool _refreshTrails = true, _cameraDirty = true;
   int _version = 0;
   @override
   void initState() {
     super.initState();
+    _displayed = widget.locations;
     if (Env.mapboxToken.startsWith('pk.')) {
       MapboxOptions.setAccessToken(Env.mapboxToken);
       _timeout = Timer(const Duration(seconds: 20), _fail);
@@ -67,60 +75,101 @@ class _GroupMapState extends State<GroupMap> {
     ),
   );
   Json _geojson() {
-    // Group nearby overlapping markers; every member remains selectable in the sheet.
-    final groups = <List<Json>>[];
-    for (final location in widget.locations) {
-      final group = widget.campus
-          ? null
-          : groups
-                .where((g) => distanceMetres(g.first, location) < 25)
-                .firstOrNull;
-      if (group == null) {
-        groups.add([location]);
-      } else {
-        group.add(location);
-      }
-    }
-    Json feature(Json l, String label, String color) => {
+    Json feature(Json l, String label, String color, String kind) => {
       'type': 'Feature',
       'geometry': {
         'type': 'Point',
         'coordinates': [l['longitude'], l['latitude']],
       },
-      'properties': {'label': label, 'color': color},
+      'properties': {
+        'label': label,
+        'color': color,
+        'kind': kind,
+        'user_id': l['user_id'],
+        'icon': kind == 'destination' ? 'regroup-pin' : 'dot-$color',
+      },
     };
     return {
       'type': 'FeatureCollection',
       'features': [
-        for (final group in groups)
+        for (final l in _displayed)
           feature(
-            group.first,
-            widget.campus
-                ? (widget.names[group.first['user_id']] ?? 'Runner')
-                      .split(' · ')
-                      .first
-                : group.length > 1
-                ? '${group.length} friends · select below'
-                : '${(widget.names[group.first['user_id']] ?? 'Traveler').split(' ').map((s) => s.isEmpty ? '' : s[0]).take(2).join()} · ${widget.names[group.first['user_id']] ?? 'Traveler'}',
-            group.any((l) => l['stale'] == true)
-                ? '#F6B63D'
-                : widget.campus
-                ? switch (group.first['user_id']) {
-                    'sim-runner-0' => '#AFC7A0',
-                    'sim-runner-1' => '#E0B779',
-                    'sim-runner-2' => '#C3C8DC',
-                    _ => '#FFFFFF',
-                  }
-                : '#7AC49B',
+            l,
+            (widget.names[l['user_id']] ?? 'Traveler').split(' · ').first,
+            l['stale'] == true ? '#F6B63D' : travelerColor(l['user_id']),
+            'person',
           ),
         if (widget.destination != null)
           feature(
             widget.destination!,
-            'Regroup · ${widget.destination!['name']}',
-            '#F78086',
+            'Meet · ${widget.destination!['name']}',
+            '#EC4963',
+            'destination',
           ),
       ],
     };
+  }
+
+  Future<void> _addMarkers(MapboxMap map) async {
+    for (final color in [
+      '#EC4963',
+      '#4A8DAB',
+      '#9A68AE',
+      '#43836B',
+      '#F6B63D',
+      'pin',
+    ]) {
+      final pin = color == 'pin';
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder)..scale(2);
+      final paint = Paint()
+        ..color = pin
+            ? const Color(0xFFEC4963)
+            : Color(int.parse(color.substring(1), radix: 16) + 0xFF000000);
+      if (pin) {
+        final path = Path()
+          ..moveTo(16, 42)
+          ..cubicTo(12, 34, 2, 24, 2, 16)
+          ..arcToPoint(const Offset(30, 16), radius: const Radius.circular(14))
+          ..cubicTo(30, 24, 20, 34, 16, 42)
+          ..close();
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 3,
+        );
+        canvas.drawPath(path, paint);
+        canvas.drawCircle(
+          const Offset(16, 16),
+          5,
+          Paint()..color = Colors.white,
+        );
+      } else {
+        canvas.drawCircle(
+          const Offset(16, 16),
+          14,
+          Paint()..color = paint.color.withValues(alpha: .2),
+        );
+        canvas.drawCircle(
+          const Offset(16, 16),
+          8,
+          Paint()..color = Colors.white,
+        );
+        canvas.drawCircle(const Offset(16, 16), 6, paint);
+      }
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(64, pin ? 88 : 64);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      await map.addImage(
+        pin ? 'regroup-pin' : 'dot-$color',
+        2,
+        StyleImage.bytes(bytes!.buffer.asUint8List()),
+      );
+      image.dispose();
+      picture.dispose();
+    }
   }
 
   Future<void> _loaded() async {
@@ -164,39 +213,82 @@ class _GroupMapState extends State<GroupMap> {
         'live-group',
         jsonEncode({'type': 'geojson', 'data': _geojson()}),
       );
-      await map.addStyleLayer(
+      await _addMarkers(map);
+      await map.addStyleSource(
+        'live-trails',
         jsonEncode({
-          'id': 'live-dots',
-          'type': 'circle',
-          'source': 'live-group',
-          'paint': {
-            'circle-radius': 18,
-            'circle-color': ['get', 'color'],
-            'circle-stroke-color': '#171717',
-            'circle-stroke-width': 2,
-          },
+          'type': 'geojson',
+          'data': trailFeatures(
+            widget.trails,
+            widget.locations,
+            widget.serverTime ?? DateTime.now(),
+          ),
         }),
-        null,
       );
-      await map.addStyleLayer(
-        jsonEncode({
+      for (final layer in [
+        {
+          'id': 'live-trail-halo',
+          'type': 'line',
+          'source': 'live-trails',
+          'layout': {'line-join': 'round', 'line-cap': 'round'},
+          'paint': {
+            'line-color': '#FFFFFF',
+            'line-width': 7,
+            'line-opacity': .75,
+          },
+        },
+        {
+          'id': 'live-trail',
+          'type': 'line',
+          'source': 'live-trails',
+          'layout': {'line-join': 'round', 'line-cap': 'round'},
+          'paint': {
+            'line-color': ['get', 'color'],
+            'line-width': 4,
+            'line-opacity': .85,
+          },
+        },
+        {
+          'id': 'live-dots',
+          'type': 'symbol',
+          'source': 'live-group',
+          'layout': {
+            'icon-image': ['get', 'icon'],
+            'icon-anchor': [
+              'case',
+              [
+                '==',
+                ['get', 'kind'],
+                'destination',
+              ],
+              'bottom',
+              'center',
+            ],
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+            'icon-pitch-alignment': 'viewport',
+          },
+        },
+        {
           'id': 'live-names',
           'type': 'symbol',
           'source': 'live-group',
           'layout': {
             'text-field': ['get', 'label'],
-            'text-size': 13,
-            'text-offset': [0, 2],
-            'text-allow-overlap': true,
+            'text-size': 12,
+            'text-offset': [0, 1.7],
+            'text-allow-overlap': false,
+            'text-optional': true,
           },
           'paint': {
             'text-color': '#171717',
             'text-halo-color': '#FFFFFF',
             'text-halo-width': 2,
           },
-        }),
-        null,
-      );
+        },
+      ]) {
+        await map.addStyleLayer(jsonEncode(layer), null);
+      }
       if (!mounted) return;
       _timeout?.cancel();
       _ready = true;
@@ -217,6 +309,20 @@ class _GroupMapState extends State<GroupMap> {
     try {
       do {
         _dirty = false;
+        if (_refreshTrails) {
+          _refreshTrails = false;
+          await _map!.setStyleSourceProperty(
+            'live-trails',
+            'data',
+            jsonEncode(
+              trailFeatures(
+                widget.trails,
+                widget.locations,
+                widget.serverTime ?? DateTime.now(),
+              ),
+            ),
+          );
+        }
         await _map!.setStyleSourceProperty(
           'live-group',
           'data',
@@ -224,7 +330,7 @@ class _GroupMapState extends State<GroupMap> {
         );
       } while (_dirty && mounted);
       final target =
-          widget.focus ??
+          (_cameraDirty ? widget.focus : null) ??
           (!_centered
               ? widget.campus
                     ? CampusSimulation.center
@@ -232,6 +338,7 @@ class _GroupMapState extends State<GroupMap> {
               : null);
       if (target != null && mounted) {
         _centered = true;
+        _cameraDirty = false;
         await _map!.setCamera(
           CameraOptions(
             center: _point(target),
@@ -277,7 +384,7 @@ class _GroupMapState extends State<GroupMap> {
           'minzoom': 14,
           if (!widget.campus) 'filter': ['==', 'extrude', 'true'],
           'paint': {
-            'fill-extrusion-color': widget.campus ? '#D4D7CC' : '#b9cbc1',
+            'fill-extrusion-color': widget.campus ? '#D4D7CC' : '#D7D8D6',
             'fill-extrusion-height': widget.campus
                 ? [
                     'max',
@@ -297,7 +404,7 @@ class _GroupMapState extends State<GroupMap> {
             'fill-extrusion-opacity': 0.85,
           },
         }),
-        null,
+        LayerPosition(below: 'live-trail-halo'),
       );
       if (!widget.campus) {
         await _map!.addStyleSource(
@@ -323,12 +430,57 @@ class _GroupMapState extends State<GroupMap> {
   @override
   void didUpdateWidget(covariant GroupMap oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _refreshTrails = true;
+    _cameraDirty = oldWidget.focus != widget.focus;
+    final before = {for (final l in _displayed) l['user_id']: l};
+    final moved = widget.locations.any(
+      (l) =>
+          before[l['user_id']]?['latitude'] != l['latitude'] ||
+          before[l['user_id']]?['longitude'] != l['longitude'],
+    );
+    _motion?.cancel();
+    if (!moved || !_ready) {
+      _displayed = widget.locations;
+    } else {
+      var frame = 0;
+      void interpolate(double t) {
+        _displayed = widget.locations.map((l) {
+          final start = before[l['user_id']];
+          if (start == null ||
+              l['stale'] == true ||
+              distanceMetres(start, l) > 500) {
+            return l;
+          }
+          return <String, dynamic>{
+            ...l,
+            'latitude':
+                (start['latitude'] as num) +
+                ((l['latitude'] as num) - (start['latitude'] as num)) * t,
+            'longitude':
+                (start['longitude'] as num) +
+                ((l['longitude'] as num) - (start['longitude'] as num)) * t,
+          };
+        }).toList();
+      }
+
+      interpolate(0);
+      _motion = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        interpolate((++frame / 8).clamp(0, 1));
+        unawaited(_update());
+        if (frame >= 8) timer.cancel();
+      });
+    }
     unawaited(_update());
   }
 
   @override
   void dispose() {
     _timeout?.cancel();
+    _motion?.cancel();
     super.dispose();
   }
 

@@ -256,7 +256,7 @@ class _LiveMapScreenState extends State<LiveMapScreen>
       'Share your live location?',
       'Everyone who joins “${snapshot.session['name']}” can see your latest location and accuracy, including members invited later.\n\n'
           'Sharing ends at ${DateTime.parse(snapshot.session['expires_at'] as String).toLocal()}. It runs only while this map is open in the foreground.\n\n'
-          'Stop removes your position. If offline, others may see the last position for up to 30 seconds. No route history is kept in the app. Managed backups can retain deleted rows under the deployment retention policy.\n\n'
+          'Your recent path (up to 15 minutes) is visible to this session. Pause or Stop removes your position and path. If offline, both disappear from the map within 30 seconds. Managed backups can retain deleted rows under the deployment retention policy.\n\n'
           '${store.simulated ? 'Demo: synthetic positions only; your GPS is never accessed.' : 'Your device will ask for location permission next. You can decline and still view the group.'}',
       label: 'Agree and share',
     );
@@ -592,6 +592,8 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                                       },
                                     )
                                     .toList(),
+                                trails: snapshot.trails,
+                                serverTime: store.serverNow,
                                 names: {
                                   for (final m in snapshot.members)
                                     m['user_id'] as String:
@@ -611,7 +613,7 @@ class _LiveMapScreenState extends State<LiveMapScreen>
                             child: Text(
                               snapshot.destination == null
                                   ? 'Tap the map to choose a regroup point.'
-                                  : '${snapshot.destination!['name']} · edited by ${snapshot.name(snapshot.destination!['set_by_user_id'] as String)}\nApproximate straight-line distances; no route or ETA.',
+                                  : '${snapshot.destination!['name']} · edited by ${snapshot.name(snapshot.destination!['set_by_user_id'] as String)}\nRecent GPS trails · gaps when accuracy is low.\nDistances are straight-line; no route or ETA.',
                               textAlign: TextAlign.center,
                             ),
                           ),

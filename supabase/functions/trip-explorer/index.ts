@@ -21,7 +21,23 @@ Deno.serve(async request => {
     catch { return reply({error:'Invalid area, category or route parameters'},400); }
     const {error}=await db.rpc('explorer_provider_access',{p_trip_id:input.trip_id});
     if(error) return reply({error:error.message.includes('rate limit')?'Too many requests. Retry in a minute.':'Trip organizer access required'},error.message.includes('rate limit')?429:403);
-    if(!Deno.env.get('GEOAPIFY_API_KEY')) return reply({error:'Place and route service is not configured'},503);
+    if(input.action!=='highlight' && !Deno.env.get('GEOAPIFY_API_KEY')) return reply({error:'Place and route service is not configured'},503);
+    // Balance discovery across interests; a dense restaurant district should not hide bus stops.
+    if(input.action==='places' && input.category==='all') {
+      const results=await Promise.allSettled(['culture','nature','food','transport','services'].map(async category=> {
+        const query={...input,category};
+        const endpoint=providerUrl(query,Deno.env.get('GEOAPIFY_API_KEY')!);
+        endpoint.searchParams.set('limit','8');
+        const response=await fetch(endpoint,{signal:AbortSignal.timeout(15000)});
+        if(!response.ok) throw {category,status:response.status};
+        return normalize(query,await response.json(),new Date().toISOString());
+      }));
+      if(results.every(r=>r.status==='rejected')) return reply({error:'Place service unavailable. Retry later.'},results.some(r=>r.status==='rejected' && r.reason?.status===429)?429:502);
+      const places=new Map();
+      for(const r of results) if(r.status==='fulfilled') for(const p of r.value.places ?? []) places.set(p.id,p);
+      const missing=results.flatMap((r,i)=>r.status==='rejected'?[['culture','nature','food','transport','services'][i]]:[]);
+      return reply({places:[...places.values()].slice(0,40),...(missing.length?{warning:`Some categories could not load: ${missing.join(', ')}. Retry that category.`}:{})});
+    }
     const response=await fetch(url,{signal:AbortSignal.timeout(15000)});
     if(!response.ok) return reply({error:response.status===429?'Provider rate limit. Retry later.':'Provider unavailable. Try another mode or area.'},response.status===429?429:502);
     return reply(normalize(input,await response.json(),new Date().toISOString()));

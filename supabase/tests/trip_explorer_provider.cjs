@@ -20,6 +20,23 @@ assert.deepEqual(normalize(input,{features:[]},'now'),{places:[]});
 const places=normalize(input,{features:[{properties:{place_id:'place-1',lon:73.8,lat:15.4,name:'Museum',categories:['culture']}}]},'now');
 assert.equal(places.places[0].provider_place_id,'place-1');assert.equal(places.places[0].selection_type,'excluded');
 assert.equal(places.places[0].source_checked_at,'now');
+// Rich listings keep online provenance and never label meals or fares as free admission.
+const rich=normalize(input,{features:[{properties:{place_id:'food',lon:73.8,lat:15.4,categories:['catering','catering.food_court'],
+ datasource:{raw:{cuisine:'kerala;seafood',fee:'no',website:'javascript:alert(1)',opening_hours:'09:00-21:00'}}}},
+ {properties:{place_id:'bus',lon:73.8,lat:15.4,categories:['public_transport.bus'],datasource:{raw:{operator:'Local buses',fee:'no'}}}},
+ {properties:{place_id:'park',lon:73.8,lat:15.4,categories:['leisure.park'],datasource:{raw:{fee:'no',wikipedia:'en:Some park'}}}}]},'now').places;
+assert.equal(rich[0].kind,'food');assert.equal(rich[0].fee,'no');assert.equal(rich[0].free_admission,false);
+assert.equal(rich[0].website,null);assert.equal(rich[0].cuisine,'kerala;seafood');
+assert.equal(rich[1].kind,'transport');assert.equal(rich[1].free_admission,false);
+assert.equal(rich[2].free_admission,true);
+assert.equal(providerUrl({...input,category:'transport'},'test').searchParams.get('categories'),'public_transport,rental.bicycle,rental.car,rental.boat,service.taxi');
+assert.equal(providerUrl({action:'search',text:'Kochi Fort'},'test').searchParams.get('text'),'Kochi Fort');
+assert.throws(()=>providerUrl({action:'search',text:'a'},'test'));
+assert.equal(normalize({action:'search'},{features:[{properties:{formatted:'Fort Kochi',lon:76.24,lat:9.96}}]},'now').results[0].name,'Fort Kochi');
+assert.equal(providerUrl({action:'highlight',wikipedia:'en:Fort Kochi'},'').hostname,'en.wikipedia.org');
+assert.throws(()=>providerUrl({action:'highlight',wikipedia:'https://127.0.0.1/private'},''));
+assert.throws(()=>providerUrl({action:'highlight',wikipedia:'en:Title|Other'},''));
+assert.equal(normalize({action:'highlight'},{extract:'Local history',content_urls:{desktop:{page:'https://en.wikipedia.org/wiki/Fort_Kochi'}}},'now').description,'Local history');
 console.log('PASS: provider request bounds, coordinates, modes, normalization, missing/empty results');
 
 (async()=>{

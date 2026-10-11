@@ -10,6 +10,9 @@ const assert = require('node:assert/strict');
   const db = new PGlite({ extensions: { pgcrypto } });
   await db.exec(`
     create role anon; create role authenticated; create role service_role bypassrls;
+    -- Hosted Supabase installs pgcrypto outside public.
+    create schema extensions;
+    create extension pgcrypto with schema extensions;
     create schema auth; create schema storage;
     create table auth.users(id uuid primary key,email text,raw_user_meta_data jsonb default '{}');
     create function auth.uid() returns uuid language sql stable as
@@ -20,7 +23,7 @@ const assert = require('node:assert/strict');
     create function storage.foldername(text) returns text[] language sql as $$ select string_to_array($1,'/') $$;
     grant usage on schema public,auth,storage to authenticated,anon,service_role;
   `);
-  for (const file of ['0001_init.sql','0002_companion.sql','0003_live_map.sql','0005_payment_expenses.sql']) {
+  for (const file of ['0001_init.sql','0002_companion.sql','0003_live_map.sql','0005_payment_expenses.sql','0006_invite_random_bytes.sql']) {
     try { await db.exec(readFileSync(join(__dirname,'../migrations',file),'utf8')); }
     catch (error) { console.error(`Migration failed: ${file}`, error.message); throw error; }
   }
@@ -44,8 +47,21 @@ const assert = require('node:assert/strict');
   await cmd('update_trip',{trip_id:trip,...creation,start_date:'2030-01-02',expected_updated_at:beforeEdit});
   assert.equal((await snapshot()).trips[0].start_date,'2030-01-02');
   await rejected('update_trip',{trip_id:trip,...creation,expected_updated_at:beforeEdit},/Trip changed/);
-  const {token}=await cmd('invite',{trip_id:trip});
+  const inviteRequest=randomUUID();
+  const {token}=await cmd('invite',{trip_id:trip},inviteRequest);
+  assert.match(token,/^[0-9a-f]{48}$/);
+  assert.deepEqual(await cmd('invite',{trip_id:trip},inviteRequest),{token});
+  assert.equal((await snapshot()).invites.length,1);
+  await assert.rejects(()=>db.query('select public.companion_command_base($1,$2,$3)',['invite',{trip_id:trip},randomUUID()]),/permission denied/);
+  // The same migration also supports local installs with pgcrypto in public.
+  await db.exec('reset role; alter extension pgcrypto set schema public;');
+  await asUser(a);
+  const {token:otherToken}=await cmd('invite',{trip_id:trip});
+  assert.match(otherToken,/^[0-9a-f]{48}$/);
+  assert.notEqual(otherToken,token);
+  await db.exec('reset role; alter extension pgcrypto set schema extensions;');
   for(const id of [b,c]) {await asUser(id);await cmd('join_trip',{token});}
+  await rejected('invite',{trip_id:trip},/Only organizer/);
   await asUser(a);
   const personalRequest=randomUUID();
   const personalData={trip_id:trip,title:'Private coffee',amount_minor:125050,category:'Food',expense_date:'2026-10-11',capture_id:personalRequest};

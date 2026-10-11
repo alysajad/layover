@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,6 +7,32 @@ import 'package:uuid/uuid.dart';
 
 import '../../companion/data/trip_store.dart';
 import '../domain/explorer.dart';
+
+String explorerErrorMessage(Object error) {
+  if (error is FormatException) return error.message;
+  if (error is PostgrestException) {
+    if (['PGRST205', 'PGRST202', '42P01', '42883'].contains(error.code)) {
+      return 'Saved plans are not available yet. Explorer setup on the server is incomplete. You can still choose an area on the map.';
+    }
+    if (['42501', 'PGRST301', 'PGRST302'].contains(error.code)) {
+      return 'Your trip access could not be verified. Refresh the trip or sign in again.';
+    }
+  }
+  if (error is FunctionException) {
+    if (error.status == 404) {
+      return 'Place search and discovery are not available yet. Explorer setup on the server is incomplete. You can still draw an area on the map.';
+    }
+    if (error.status == 401) return 'Sign in again to search for places.';
+    if (error.details is Map && error.details['error'] is String) {
+      return error.details['error'] as String;
+    }
+    return 'Place search is temporarily unavailable. Please try again.';
+  }
+  if (error is TimeoutException) {
+    return 'The request took too long. Check your connection and try again.';
+  }
+  return 'Could not complete this request. Check your connection and try again.';
+}
 
 class ExplorerRepository {
   ExplorerRepository(this.trip, this.tripId)
@@ -17,6 +44,7 @@ class ExplorerRepository {
   static final Expando<List<Json>> _memory = Expando<List<Json>>();
   final Map<String, (DateTime, Json)> _cache = {};
   bool _closed = false;
+  String? discoveryWarning;
   void close() {
     _closed = true;
     _cache.clear();
@@ -54,11 +82,7 @@ class ExplorerRepository {
       result = Map<String, dynamic>.from(response.data as Map);
       if (result['error'] != null) throw FormatException('${result['error']}');
     } on FunctionException catch (e) {
-      throw FormatException(
-        e.details is Map
-            ? '${e.details['error'] ?? 'Provider unavailable'}'
-            : 'Provider unavailable. Try again later.',
-      );
+      throw FormatException(explorerErrorMessage(e));
     }
     check(write: true);
     if (_cache.length >= 60) _cache.remove(_cache.keys.first);
@@ -66,21 +90,44 @@ class ExplorerRepository {
     return result;
   }
 
+  Future<List<Json>> search(String text) async {
+    check(write: true);
+    if (demo) {
+      return [
+        {
+          'name': 'Demo area · $text',
+          'point': [73.8278, 15.4909],
+        },
+      ];
+    }
+    return rows(
+      (await provider({'action': 'search', 'text': text}))['results'],
+    );
+  }
+
+  Future<Json> highlight(String wikipedia) =>
+      provider({'action': 'highlight', 'wikipedia': wikipedia});
+
   Future<List<Json>> discover(
     Zone zone,
     String category,
     String currency,
   ) async {
     check(write: true);
+    discoveryWarning = null;
+    final response = demo
+        ? null
+        : await provider({
+            'action': 'places',
+            'zone': zone.data,
+            'category': category,
+          });
+    discoveryWarning = response?['warning'] as String?;
     final result = demo
         ? _demoPlaces(zone)
-        : rows(
-            (await provider({
-              'action': 'places',
-              'zone': zone.data,
-              'category': category,
-            }))['places'],
-          );
+              .where((p) => category == 'all' || p['kind'] == category)
+              .toList()
+        : rows(response!['places']);
     return result
         .where((p) => zone.contains(coordinate(p['point'])))
         .map(
@@ -88,10 +135,26 @@ class ExplorerRepository {
             ...p,
             'cost': costItem(
               'admission:${p['id']}',
-              'admission',
-              'Admission · ${p['name']}',
+              p['kind'] == 'food'
+                  ? 'food'
+                  : p['kind'] == 'transport'
+                  ? 'transport'
+                  : 'admission',
+              '${p['kind'] == 'food'
+                  ? 'Meal'
+                  : p['kind'] == 'transport'
+                  ? 'Fare'
+                  : 'Admission'} · ${p['name']}',
               currency,
               basis: 'per_person',
+              low: p['free_admission'] == true ? 0 : null,
+              high: p['free_admission'] == true ? 0 : null,
+              status: p['free_admission'] == true
+                  ? 'published_tariff'
+                  : 'unknown',
+              source: p['free_admission'] == true
+                  ? 'OpenStreetMap lists no admission fee · verify before visiting'
+                  : 'Price not published',
             ),
           },
         )
@@ -156,7 +219,8 @@ class ExplorerRepository {
             .select()
             .eq('trip_id', tripId)
             .order('created_at', ascending: false)
-            .limit(100),
+            .limit(100)
+            .timeout(const Duration(seconds: 20)),
       );
     }
     check();
@@ -273,15 +337,35 @@ class ExplorerRepository {
       'Demo coastal garden',
       'Demo local museum',
       'Demo market square',
+      'Demo local bus stop',
+      'Demo pharmacy',
     ];
     return List.generate(
-      4,
+      6,
       (i) => {
         'id': 'demo-place-$i',
         'provider': 'demo',
         'provider_place_id': 'demo-place-$i',
         'name': names[i],
-        'category': ['culture', 'nature', 'culture', 'food'][i],
+        'category': [
+          'culture',
+          'nature',
+          'culture',
+          'food',
+          'transport',
+          'services',
+        ][i],
+        'kind': [
+          'culture',
+          'nature',
+          'culture',
+          'food',
+          'transport',
+          'services',
+        ][i],
+        if (i == 3) 'cuisine': 'Demo local cuisine',
+        if (i == 4) 'operator': 'Demo local bus service',
+        'description': 'Synthetic demo listing; discover an area in your connected trip for online information.',
         'point': [center[0] + (i + 1) * 0.001, center[1] + (i % 2) * 0.002],
         'selection_type': 'excluded',
         'priority': 1,

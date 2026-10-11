@@ -5,3 +5,7 @@ verify_jwt = false
 [functions.trip-explorer]
 # The function validates the bearer token with auth.getUser, then checks trip access.
 verify_jwt = false
+
+[functions.trip-planner]
+# User JWT + organizer check, or a server-only x-planner-secret scheduler header.
+verify_jwt = false

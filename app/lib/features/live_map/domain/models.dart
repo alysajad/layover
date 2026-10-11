@@ -9,6 +9,7 @@ class LiveSnapshot {
   Json get session => Map<String, dynamic>.from(data['session'] as Map);
   List<Json> get members => rows(data['members']);
   List<Json> get locations => rows(data['locations']);
+  List<Json> get trails => rows(data['trails']);
   Json? get destination => data['destination'] == null
       ? null
       : Map<String, dynamic>.from(data['destination'] as Map);
